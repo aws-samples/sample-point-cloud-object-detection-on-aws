@@ -1,0 +1,274 @@
+# GPU Dockerfile for Point Cloud Detection Worker
+# Includes PyTorch + CUDA + MMDetection3D + MinkowskiEngine for real inference
+#
+# Build:
+#   docker build -f Dockerfile.gpu -t pointcloud-backend-gpu .
+#   (on a large host, --build-arg MAX_JOBS=<n> runs more compile jobs; the default 2
+#   keeps nvcc from running out of memory on a small one)
+#
+# Two stages, both from ECR Public. `build` compiles on the AWS Deep Learning Containers
+# base image, which carries the CUDA 12.9 toolkit (nvcc), the compilers and the kernel
+# headers. The shipped image is Ubuntu 22.04 plus the interpreter and venv built there:
+# none of the toolchain, and none of the advisories that come with it (linux-libc-dev
+# alone carries hundreds of kernel CVEs with no fix released). It needs no CUDA base:
+# torch's CUDA wheels bring the CUDA runtime libraries (cudart, cuBLAS, cuSPARSE, cuDNN
+# and the rest) as PyPI packages in the venv, and torch loads them before mmcv's and
+# MinkowskiEngine's extensions, which link against the same libraries. The NVIDIA
+# driver comes from the host, through the NVIDIA container runtime.
+#
+# Version pinning rationale:
+#   - Python 3.11 (NOT 3.12): MinkowskiEngine cannot build on 3.12, and the
+#     OpenMMLab 3D stack does not run on it. CPython 3.11.16 is installed by uv from
+#     python-build-standalone, checked against the checksum uv carries for it, into
+#     /opt/python; no apt Python and no third-party PPA.
+#   - torch 2.13.0+cu129: the version uv.lock pins for the `ml` extra, and the first
+#     with no known advisory. It is past CVE-2026-24747 (memory corruption in the
+#     weights-only unpickler, fixed in 2.10.0) and every earlier torch.load advisory.
+#     CUDA 12.9 is the newest the AWS base offers for Ubuntu 22.04, and torch builds
+#     for it; its builds support Turing (T4) and newer, which is every GPU the node
+#     pools use. OpenMMLab publishes no mmcv CUDA wheel for it, so mmcv is compiled here.
+#   - mmcv 2.1.0, mmengine 0.10.7, mmdet 3.2.0, mmdet3d 1.4.0: mmdet3d 1.4.0 (the
+#     latest) requires mmdet<3.3.0 and mmcv<2.2.0, and 2.1.0 is the newest mmcv below
+#     that. Built from source with its CUDA ops against the torch above; its setup.py
+#     asks for C++17, and torch 2.13's headers need C++20, so the build asks for that.
+#   - numpy 1.26.4 (the last 1.x): the mmdet3d 1.4 stack predates numpy 2.
+#   - setuptools 69.5.1 and wheel 0.45.1, for the build only: the versions the mmcv
+#     and MinkowskiEngine `setup.py` builds were verified with.
+#   - setuptools 84.2.1 at runtime, the version uv.lock pins. mmengine 0.10 calls
+#     pkg_resources, which setuptools 82 removed, from one module; the build rewrites
+#     that module's three uses with importlib.metadata
+#     (scripts/patch_mmengine_metadata.py), which checks it is patching mmengine
+#     0.10.7's code exactly. Without that, the image would need setuptools 81.0.0
+#     and its advisories.
+#   - Every one of these is an exact pin. Their transitive dependencies are still
+#     resolved at build time, unlike the base dependencies, which come from uv.lock.
+#
+# Every external image is pinned by digest, and both bases come from ECR Public: the
+# Deep Learning Containers base, which AWS builds and patches, and the official Ubuntu
+# image that ECR Public mirrors from Docker Hub. ECR Public has no NVIDIA-verified
+# copy of nvidia/cuda, only re-uploads by third parties, which this avoids.
+#
+# checkov:skip=CKV_DOCKER_2: No HEALTHCHECK. Kubernetes ignores it; the worker has no
+# endpoint to probe and the Helm chart's probes do this job.
+
+FROM public.ecr.aws/deep-learning-containers/base:12.9.1-gpu-py312-cu129-ubuntu22.04-ec2@sha256:ae49e8e7ca0f30e25a8e7dfa4c484b26decfc1cd7b6b1c342c204fd5c1b20fca AS build
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Build dependencies. Python comes from uv, below; the base's own Python 3.12 is not
+# used.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential ca-certificates curl git libopenblas-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# uv, pinned by version and digest. Keep the version in step with Dockerfile and the
+# `version:` of setup-uv in .github/workflows/ci.yml and `uv==` in .gitlab-ci.yml.
+COPY --from=ghcr.io/astral-sh/uv:0.12.19@sha256:04d046b13e60d6bcec73cbc5e1cad25d680dea90c8573340950a0ac2d1aef424 /uv /usr/local/bin/uv
+
+# The interpreter goes to /opt/python, not uv's default under /root, so the app user
+# can run it; the runtime stage copies it from here.
+ENV UV_PYTHON_INSTALL_DIR=/opt/python \
+    UV_PYTHON_PREFERENCE=only-managed
+RUN uv python install cpython-3.11.16-linux-x86_64-gnu \
+    && chmod -R a+rX,go-w /opt/python
+
+# Build-time uv settings: nothing else is downloaded as an interpreter, bytecode is
+# compiled now because nothing can write it at runtime, and no download cache is
+# left in a layer.
+ENV UV_PYTHON_DOWNLOADS=never \
+    UV_COMPILE_BYTECODE=1 \
+    UV_NO_CACHE=1
+
+# Install project dependencies. /app stays owned by root and world-readable (0755
+# dirs, 0644 files), so the app user can run it but not change it; the chmod
+# normalises modes COPY brings in from a build host with a restrictive umask.
+COPY pyproject.toml uv.lock README.md ./
+RUN uv sync --frozen --no-dev --extra io --extra api --python 3.11.16 \
+    && chmod -R a+rX,go-w /app
+
+# CUDA build settings for mmcv and MinkowskiEngine.
+#   - FORCE_CUDA + TORCH_CUDA_ARCH_LIST are required because the build container has
+#     no GPU; without an explicit arch list torch's auto-detect returns empty and the
+#     CUDA extension build crashes (IndexError in _get_cuda_arch_flags). The arch list
+#     covers T4 (7.5), A100 (8.0) and A10G (8.6), whose code also runs on L4 (8.9),
+#     plus PTX for newer GPUs: the node pools' g4dn, p4d, g5 and g6. It matches torch's
+#     own cu129 builds, which start at Turing.
+#   - MAX_JOBS limits parallel nvcc jobs, which is what runs a small host out of memory.
+#     It takes effect only through ninja, installed below for the build only: without
+#     it torch's extension builder compiles one file at a time.
+ARG MAX_JOBS=2
+ENV CUDA_HOME=/usr/local/cuda
+ENV PATH=/usr/local/cuda/bin:${PATH}
+ENV MAX_JOBS=${MAX_JOBS}
+ENV FORCE_CUDA=1
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0;8.6+PTX"
+
+# Install PyTorch with CUDA 12.9 (pinned; also pin numpy 1.x for the mmdet3d stack)
+RUN uv pip install torch==2.13.0 torchvision==0.28.0 --index-url https://download.pytorch.org/whl/cu129 && uv pip install numpy==1.26.4
+
+# Install the mmdet3d stack. mmcv is compiled from its source distribution, with its
+# CUDA ops (MMCV_WITH_OPS, and FORCE_CUDA above, since the build has no GPU):
+# OpenMMLab's wheel index has no build for this torch. The sdist is fetched by URL and
+# checked against PyPI's SHA-256 for it, then its C++ standard is raised to C++20.
+ARG MMCV_SDIST=https://files.pythonhosted.org/packages/a7/19/f97f0fd4d432113a232e75f965335be6b7bb6557ae9faf8051e9a012cadd/mmcv-2.1.0.tar.gz
+ARG MMCV_SHA256=d387bcab66b467479b6660310e23746cfc79c6e57acf04094680adb499a5cd3f
+RUN uv pip install setuptools==69.5.1 wheel==0.45.1 ninja==1.13.2 \
+    && uv pip install mmengine==0.10.7 \
+    && curl -fsSL -o /tmp/mmcv.tar.gz "${MMCV_SDIST}" \
+    && echo "${MMCV_SHA256}  /tmp/mmcv.tar.gz" | sha256sum -c - \
+    && mkdir /tmp/mmcv && tar -xzf /tmp/mmcv.tar.gz -C /tmp/mmcv --strip-components=1 \
+    && sed -i 's/-std=c++1[47]/-std=c++20/g' /tmp/mmcv/setup.py \
+    && MMCV_WITH_OPS=1 uv pip install /tmp/mmcv --no-build-isolation \
+    && rm -rf /tmp/mmcv /tmp/mmcv.tar.gz \
+    && uv pip install mmdet==3.2.0 mmdet3d==1.4.0 --no-build-isolation --no-cache \
+    && uv pip install numpy==1.26.4
+
+# Install MinkowskiEngine (enables FCAF3D indoor detection model).
+# Notes:
+#   - Built from a fixed commit, fetched by its SHA and checked after checkout, rather
+#     than the tip of the default branch. 02fc608 is the head of master (2023-03-22),
+#     which is what the unpinned clone used to build; v0.5.4, the last tag, is older.
+#   - MinkowskiEngine setup.py shells out to a bare `pip`, so install pip into the venv.
+#   - It is built as a wheel and installed without dependencies, rather than with
+#     `setup.py install`: that runs easy_install, which fetched an unpinned setuptools
+#     from PyPI to satisfy torch's setuptools>=77 and left it in the venv as an egg.
+#   - CUDA 12's Thrust no longer brings in, transitively, the headers four of its files
+#     use, so they are added after each file's first #include.
+#   - It bundles an old copy of NVIDIA's NVTX3 header, which clashes with the NVTX3 that
+#     CUB in CUDA 12 includes for its profiling ranges. NVTX_DISABLE, passed to nvcc
+#     for this build only, turns CUB's ranges off and with them the clash.
+#   - Its CUDA files are compiled as C++17, the standard its code was written for and
+#     one torch's headers accept, rather than the C++20 torch otherwise asks for.
+#   - It builds its hash map as a unique_ptr with a custom deleter and assigns that to a
+#     shared_ptr. libstdc++ does so with an unqualified __to_address call, which through
+#     its Thrust types also finds CUDA 12's cuda::std::__to_address, and nvcc rejects the
+#     ambiguity. The patch builds the shared_ptr from the released pointer and the same
+#     deleter, which is the same ownership without that call.
+# setup.py names its pybind sources and its packages by relative path, so it must run
+# from the checkout, and the checkout is removed in the same layer, which a WORKDIR
+# could not do; hence the cd (a style rule, not a defect).
+#trivy:ignore:DS-0013
+RUN ME_COMMIT=02fc608bea4c0549b0a7b00ca1bf15dee4a0b228 \
+    && uv pip install pip==26.2.1 \
+    && git init -q /tmp/MinkowskiEngine \
+    && git -C /tmp/MinkowskiEngine fetch -q --depth 1 https://github.com/NVIDIA/MinkowskiEngine.git "${ME_COMMIT}" \
+    && git -C /tmp/MinkowskiEngine checkout -q FETCH_HEAD \
+    && test "$(git -C /tmp/MinkowskiEngine rev-parse HEAD)" = "${ME_COMMIT}" \
+    && cd /tmp/MinkowskiEngine \
+    && sed -i '0,/^#include.*/s//&\n#include <thrust\/execution_policy.h>/' src/convolution_kernel.cuh src/3rdparty/concurrent_unordered_map.cuh \
+    && sed -i '0,/^#include.*/s//&\n#include <thrust\/unique.h>\n#include <thrust\/remove.h>/' src/coordinate_map_gpu.cu \
+    && sed -i '0,/^#include.*/s//&\n#include <thrust\/execution_policy.h>\n#include <thrust\/reduce.h>\n#include <thrust\/sort.h>/' src/spmm.cu \
+    && sed -i 's/NVCC_FLAGS += \["--expt-relaxed-constexpr", "--expt-extended-lambda"\]/&; NVCC_FLAGS.append("-std=c++17")/' setup.py \
+    && grep -q 'NVCC_FLAGS.append("-std=c++17")' setup.py \
+    && sed -i 's/m_map = map_type::create(/m_map = [](auto created) { auto deleter = created.get_deleter(); return std::shared_ptr<map_type>(created.release(), deleter); }(map_type::create(/; s/m_unused_element, m_unused_key, m_hasher, m_equal, m_map_allocator);/m_unused_element, m_unused_key, m_hasher, m_equal, m_map_allocator));/' src/coordinate_map_gpu.cuh \
+    && grep -q 'created.release(), deleter); }(map_type::create(' src/coordinate_map_gpu.cuh \
+    && grep -q 'm_map_allocator));' src/coordinate_map_gpu.cuh \
+    && NVCC_APPEND_FLAGS=-DNVTX_DISABLE PATH=/app/.venv/bin:$PATH /app/.venv/bin/python setup.py bdist_wheel --force_cuda --blas=openblas \
+    && uv pip install --python /app/.venv/bin/python --no-deps dist/MinkowskiEngine-*.whl \
+    && rm -rf /tmp/MinkowskiEngine
+
+# Compilation is done.
+#   - Move setuptools to the runtime version, and patch mmengine so nothing needs the
+#     pkg_resources it no longer ships (see the header).
+#   - Remove two packages mmdet3d requires and this image does not use: plyfile
+#     (GPL-3.0-or-later), which nothing imports, and lyft-dataset-sdk (CC BY-NC-SA 4.0,
+#     non-commercial), which mmdet3d imports only to register its Lyft metric.
+#     scripts/patch_mmdet3d_lyft.py first makes that metric optional, refusing any code
+#     but mmdet3d 1.4.0's (THIRD-PARTY-LICENSES). With the SDK go the packages only it
+#     required: pytest, black, flake8, and pandas, whose current release refuses to
+#     import with numpy 1.26.4, so it broke every import of mmdet3d's metrics.
+#   - Remove the build-only tools. pip (for MinkowskiEngine's setup.py) vendors its
+#     own certifi, urllib3, msgpack and pkg_resources, all of which scanners flag, and
+#     wheel 0.45.1 and ninja were only for the builds. The interpreter in /opt/python ships
+#     its own pip and setuptools, and pip and setuptools wheels for ensurepip; the venv
+#     uses none of them, so its site-packages is emptied and the wheels removed.
+#   - Re-pin what the torch install downgraded. download.pytorch.org hosts its own,
+#     older copies of torch's and torchvision's dependencies, so that step replaced
+#     the locked pillow, filelock and urllib3 (via its requests). These are the
+#     versions in uv.lock, from PyPI; requests is not in the lock, so it is pinned here.
+#     (No `uv pip check`: it rejects the deliberate numpy 1.26.4 pin, which
+#     opencv-python declares against, though its numpy-2 build runs on 1.x, and mmdet3d
+#     still declares the two packages removed above.)
+COPY scripts/patch_mmengine_metadata.py scripts/patch_mmdet3d_lyft.py /tmp/
+RUN uv pip install setuptools==84.2.1 \
+    && /app/.venv/bin/python /tmp/patch_mmengine_metadata.py \
+    && /app/.venv/bin/python /tmp/patch_mmdet3d_lyft.py \
+    && rm /tmp/patch_mmengine_metadata.py /tmp/patch_mmdet3d_lyft.py \
+    && uv pip uninstall pip wheel ninja lyft-dataset-sdk plyfile pandas pytest black flake8 \
+    && uv pip install pillow==13.0.0 filelock==4.2.4 urllib3==2.8.0 requests==2.34.2 \
+    && PYLIB=/opt/python/cpython-3.11.16-linux-x86_64-gnu/lib/python3.11 \
+    && find "$PYLIB/site-packages" -mindepth 1 -maxdepth 1 ! -name README.txt -exec rm -rf {} + \
+    && rm -f "$PYLIB"/ensurepip/_bundled/*.whl
+
+# Copy application source
+COPY src/ ./src/
+RUN chmod -R a+rX,go-w /app/src
+
+
+FROM public.ecr.aws/docker/library/ubuntu:22.04@sha256:076e7bf82319619f28dd0aa9c02ab34b055ad37100395b4f49a2ffba04fb5e11
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV PYTHONUNBUFFERED=1
+
+WORKDIR /app
+
+# Runtime libraries only: the GL and X libraries open3d and OpenCV load, OpenBLAS and
+# OpenMP for MinkowskiEngine, and the CA certificates the checkpoint downloads verify
+# TLS with. The upgrade takes the Ubuntu security fixes the pinned base predates; with
+# no CUDA package in this image, there is nothing it could move that should not.
+RUN apt-get update && apt-get upgrade -y --no-install-recommends \
+    && apt-get install -y --no-install-recommends \
+    ca-certificates libgl1 libglib2.0-0 libsm6 libxext6 libxrender1 libopenblas0 libgomp1 \
+    && rm -rf /var/lib/apt/lists/*
+
+# The venv's interpreter is the one in /opt/python, at the same path as in the build
+# stage, so the venv runs unchanged here.
+COPY --from=build /opt/python /opt/python
+COPY --from=build /app /app
+
+# What the NVIDIA container runtime reads to mount the host's driver into the
+# container: every GPU the pod is given, for compute. The nvidia/cuda images set the
+# same two variables.
+ENV NVIDIA_VISIBLE_DEVICES=all \
+    NVIDIA_DRIVER_CAPABILITIES=compute,utility
+
+# Runtime contract with the Helm charts: the venv is at /app/.venv and its entry points
+# are called directly, so nothing runs `uv run` (which may sync, and so write). With a
+# read-only root filesystem the only writable path is the /tmp the pod mounts, so the
+# per-user caches (torch hub checkpoints, numba) go there unless TORCH_HOME or the
+# like points somewhere else, as docker-compose.gpu.yml does.
+#
+# PYTHONPATH: the project was synced before src/ existed, so its editable install has
+# no path entry. Without this, `python -m pointcloud_detect...` fails with
+# ModuleNotFoundError everywhere but in the Helm charts, which set the same variable:
+# docker compose, `docker run`, and the Dockerfile.cpu image built on this.
+#
+# TORCH_FORCE_WEIGHTS_ONLY_LOAD: every torch.load in the image is weights-only,
+# including mmengine's and any that passes weights_only=False, so a checkpoint can
+# hold only tensors and plain containers (backends/checkpoints.py, threat model T28).
+ENV PATH="/app/.venv/bin:${PATH}" \
+    PYTHONPATH=/app/src \
+    UV_NO_SYNC=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    XDG_CACHE_HOME=/tmp/.cache \
+    TORCH_FORCE_WEIGHTS_ONLY_LOAD=1
+
+# Every native piece must load here, without the build stage's toolkit: the CUDA
+# extensions, the checkpoint loader, and mmengine's package lookup, which config
+# loading uses and which now reads importlib.metadata; pkg_resources must be gone, and
+# so must plyfile and lyft-dataset-sdk, with mmdet3d's registry still complete but for
+# the Lyft metric. No GPU is needed for an import. The check runs as root and the libraries it imports
+# write caches (yapf's grammar), so it removes them rather than ship them in /tmp.
+RUN python -c "import importlib.util, torch, mmcv, mmcv.ops, mmengine, mmdet3d, MinkowskiEngine, setuptools; import pointcloud_detect.backends.checkpoints; from mmengine.utils import get_installed_path; assert get_installed_path('mmdet3d').endswith('/mmdet3d'); assert importlib.util.find_spec('pkg_resources') is None; assert torch.__version__.startswith('2.13.0'), torch.__version__; assert torch.version.cuda.startswith('12.9'), torch.version.cuda; assert setuptools.__version__ == '84.2.1', setuptools.__version__; assert all(importlib.util.find_spec(m) is None for m in ('plyfile', 'lyft_dataset_sdk', 'pandas', 'pytest')); from mmdet3d.utils import register_all_modules; register_all_modules(); from mmdet3d.evaluation import LyftMetric, NuScenesMetric; assert LyftMetric is None and NuScenesMetric is not None" \
+    && rm -rf /tmp/.cache
+
+# Non-root user. It owns nothing under /app. /scratch: see Dockerfile.
+RUN useradd -m -r -u 999 -s /bin/bash appuser \
+    && install -d -o 999 -g 999 -m 0755 /scratch
+USER 999
+
+# Default: worker mode
+CMD ["/app/.venv/bin/python", "-m", "pointcloud_detect.worker.consumer"]

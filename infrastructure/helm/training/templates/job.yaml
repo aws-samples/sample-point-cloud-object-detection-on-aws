@@ -1,0 +1,98 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: training-{{ now | date "20060102-150405" }}
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: training
+  annotations:
+    # checkov:skip=CKV_K8S_15 in annotation form. IfNotPresent is deliberate: the tag
+    # is required, never latest, and names one immutable build (T29), so a node that
+    # has it holds the same bytes a pull would fetch.
+    checkov.io/skip1: CKV_K8S_15=Immutable tag required by the chart; IfNotPresent is safe
+spec:
+  backoffLimit: {{ .Values.job.backoffLimit }}
+  ttlSecondsAfterFinished: {{ .Values.job.ttlSecondsAfterFinished }}
+  template:
+    metadata:
+      labels:
+        app: training
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      # The trainer never calls the Kubernetes API, so no token is mounted. IRSA is
+      # unaffected: the pod-identity webhook injects its own projected token volume.
+      automountServiceAccountToken: false
+      restartPolicy: OnFailure
+      securityContext:
+        {{- toYaml .Values.securityContext.pod | nindent 8 }}
+      containers:
+        - name: training
+          image: {{ include "pcd.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext.container | nindent 12 }}
+          # The image's WORKDIR, stated because the work volume below is mounted at the
+          # trainer's default output_path, ./training_output.
+          workingDir: /app
+          # The venv's interpreter: a bare `python` is the system one, without the
+          # project's dependencies, and `uv run` would write to the venv first.
+          command:
+            - /app/.venv/bin/python
+            - -m
+            - pointcloud_detect.training.trainer
+            - --base-model={{ .Values.training.baseModel }}
+            - --data-path={{ .Values.training.dataPath }}
+            - --output-path={{ .Values.training.outputPath }}
+            - --epochs={{ .Values.training.epochs }}
+            - --batch-size={{ .Values.training.batchSize }}
+            - --lr={{ .Values.training.learningRate }}
+          # The root filesystem is read-only. Everything the trainer, PyTorch,
+          # mmengine and matplotlib write goes to the two emptyDirs: caches (any
+          # pretrained checkpoint fetched for cfg.load_from when opted in, the matplotlib
+          # config, the CUDA JIT cache under HOME/.nv) and temp files (mmengine's
+          # Config.fromfile) under /tmp; checkpoints, logs and the converted dataset
+          # under the work directory, which is mmengine's work_dir. Both last only as
+          # long as the pod.
+          env:
+            - name: HOME
+              value: /tmp
+            - name: XDG_CACHE_HOME
+              value: /tmp/.cache
+            - name: TORCH_HOME
+              value: /tmp/.cache/torch
+            - name: MPLCONFIGDIR
+              value: /tmp/.config/matplotlib
+            # The image's editable install is made before src/ is copied in, so the
+            # venv has no path entry for the package; see the backend chart's
+            # _helpers.tpl.
+            - name: PYTHONPATH
+              value: /app/src
+            # "0" (the default) refuses the non-commercially licensed pretrained
+            # checkpoints, so only base_weights scratch or a path of your own trains.
+            - name: ALLOW_NONCOMMERCIAL_WEIGHTS
+              value: {{ ternary "1" "0" .Values.training.allowNoncommercialWeights | quote }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+            - name: work
+              mountPath: /app/training_output
+          resources:
+            requests:
+              cpu: {{ .Values.job.resources.requests.cpu }}
+              memory: {{ .Values.job.resources.requests.memory }}
+              nvidia.com/gpu: {{ .Values.job.resources.requests | dig "nvidia.com/gpu" "1" | quote }}
+            limits:
+              cpu: {{ .Values.job.resources.limits.cpu }}
+              memory: {{ .Values.job.resources.limits.memory }}
+              nvidia.com/gpu: {{ .Values.job.resources.limits | dig "nvidia.com/gpu" "1" | quote }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.job.tmp.sizeLimit | quote }}
+        - name: work
+          emptyDir:
+            sizeLimit: {{ .Values.job.workDir.sizeLimit | quote }}
+      nodeSelector:
+        {{- toYaml .Values.job.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.job.tolerations | nindent 8 }}

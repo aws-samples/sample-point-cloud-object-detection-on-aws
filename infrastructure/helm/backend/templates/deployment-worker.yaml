@@ -1,0 +1,187 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: worker
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: worker
+  annotations:
+    # checkov:skip=CKV_K8S_15 in annotation form. IfNotPresent is deliberate: the tag
+    # is required, never latest, and names one immutable build (T29), so a node that
+    # has it holds the same bytes a pull would fetch.
+    checkov.io/skip1: CKV_K8S_15=Immutable tag required by the chart; IfNotPresent is safe
+spec:
+  {{- if not .Values.keda.enabled }}
+  replicas: {{ .Values.worker.replicas }}
+  {{- end }}
+  # replicas is deliberately omitted when KEDA is enabled. Helm would otherwise
+  # reassert it on every `helm upgrade`, overwriting the replica count KEDA had
+  # scaled to — including waking a scaled-to-zero worker and pulling up a GPU node.
+  selector:
+    matchLabels:
+      app: worker
+  template:
+    metadata:
+      labels:
+        app: worker
+      annotations:
+        # See the note in deployment-api.yaml: without this a ConfigMap edit does not
+        # change the pod spec, so the running workers keep the old values.
+        #
+        # Rolling a worker interrupts whatever it is processing. That is survivable by
+        # design — the message is only deleted on success, so an interrupted job keeps
+        # its visibility, becomes visible again and is picked up by another worker. A
+        # long job will not finish inside the 60s termination grace, so expect it to
+        # restart rather than resume.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- if .Values.worker.parser.enabled }}
+        # The EKS pod identity webhook injects IRSA's role ARN, token path and
+        # projected token mount into every container but these (its README,
+        # "eks.amazonaws.com/skip-containers"). The parser holds no AWS credential.
+        eks.amazonaws.com/skip-containers: parser
+        {{- end }}
+    spec:
+      serviceAccountName: {{ .Values.workerServiceAccount.name }}
+      # See deployment-api.yaml: no Kubernetes API token, and IRSA is unaffected.
+      automountServiceAccountToken: false
+      terminationGracePeriodSeconds: 60
+      # No shareProcessNamespace: the parser must not see the worker's processes, or
+      # their environment. fsGroup gives the scratch emptyDir to the group the worker
+      # and the parser share, so both can use /scratch/ipc, the only part of it the
+      # parser mounts; neither can read the other's /tmp.
+      securityContext:
+        {{- toYaml (merge (dict "fsGroup" .Values.securityContext.pod.runAsGroup) .Values.securityContext.pod) | nindent 8 }}
+      containers:
+        - name: worker
+          image: {{ include "pcd.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext.container | nindent 12 }}
+          # The venv's interpreter, not `uv run`, which writes to the venv first.
+          command: ["/app/.venv/bin/python", "-m", "pointcloud_detect.worker.consumer"]
+          envFrom:
+            - configMapRef:
+                name: backend-config
+          env:
+            # Which jobs this pool accepts. Set here rather than in the shared
+            # ConfigMap because it is per-pool: running a cpu and a gpu pool means two
+            # releases of this chart with different values, sharing one ConfigMap.
+            - name: WORKER_DEVICE
+              value: {{ .Values.worker.device | quote }}
+            # Both on the scratch emptyDir: tempfile honours TMPDIR for the input
+            # download, and the streaming path writes its extracts to PCD_EXTRACT_DIR.
+            - name: TMPDIR
+              value: /scratch
+            - name: PCD_EXTRACT_DIR
+              value: /scratch
+            {{- if .Values.worker.parser.enabled }}
+            # Hand every input to the parser container over the spool directory,
+            # rather than parse it here, beside the credentials.
+            - name: PCD_PARSER_MODE
+              value: sidecar
+            - name: PCD_PARSER_SPOOL
+              value: /scratch/ipc
+            {{- end }}
+            {{- include "pcd.runtimeEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: scratch
+              mountPath: /scratch
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "{{ .Values.worker.resources.requests.cpu }}"
+              memory: "{{ .Values.worker.resources.requests.memory }}"
+              ephemeral-storage: {{ .Values.worker.scratch.ephemeralStorageRequest | quote }}
+            limits:
+              cpu: "{{ .Values.worker.resources.limits.cpu }}"
+              memory: "{{ .Values.worker.resources.limits.memory }}"
+              {{- if .Values.worker.gpu.enabled }}
+              nvidia.com/gpu: "1"
+              {{- end }}
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"]
+          livenessProbe:
+            exec:
+              command: ["python", "-c", "import os; exit(0)"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+        {{- if .Values.worker.parser.enabled }}
+        # T11: the only process in the pod that runs native parsers over uploaded
+        # files. It has none of the worker's environment (no envFrom, so no bucket or
+        # queue names either), no IRSA token (skip-containers above), no Kubernetes
+        # token (automountServiceAccountToken), a uid of its own and no GPU. The only
+        # volume it shares is the spool, scratch/ipc, which holds the untrusted input
+        # anyway. It does share the pod's network, and so the worker's egress policy
+        # (T20).
+        - name: parser
+          image: {{ include "pcd.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext.container | nindent 12 }}
+            # Not the worker's uid, so it cannot touch the worker's /tmp or signal
+            # its processes; the worker's group, so the two share the spool.
+            runAsNonRoot: true
+            runAsUser: 1001
+            runAsGroup: {{ .Values.securityContext.pod.runAsGroup }}
+            seccompProfile:
+              type: RuntimeDefault
+          # -P: no working directory on sys.path ahead of the venv (see _child_command).
+          command: ["/app/.venv/bin/python", "-P", "-m", "pointcloud_detect.worker.parser_sidecar"]
+          env:
+            - name: PCD_PARSER_SPOOL
+              value: /scratch/ipc
+            # T54: pye57's Xerces-C refuses a DTD, and with it external entities.
+            - name: XERCES_DISABLE_DTD
+              value: "1"
+            # No GPU, even from Dockerfile.gpu: its CUDA base sets this to "all", and
+            # where the node's default runtime is NVIDIA's (the EKS NVIDIA AMIs) that
+            # alone would hand this container every GPU on the node, other pods'
+            # included, with no nvidia.com/gpu request. "void" mounts none of them
+            # and none of the driver; the sidecar refuses to start if one is there.
+            - name: NVIDIA_VISIBLE_DEVICES
+              value: void
+            {{- include "pcd.runtimeEnv" . | nindent 12 }}
+          volumeMounts:
+            # The spool only. The rest of scratch is the worker's TMPDIR and extracts,
+            # and the volume's root is writable by every uid, so the whole volume
+            # would let the parser read those names, plant files beside them, and fill
+            # the limit the pod is evicted at.
+            - name: scratch
+              mountPath: /scratch/ipc
+              subPath: ipc
+            - name: parser-tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.worker.parser.resources | nindent 12 }}
+          # The supervisor loop is alive. A hung conversion is its own business: it
+          # kills the child at the request's timeout and reports the job failed.
+          livenessProbe:
+            exec:
+              command: ["/app/.venv/bin/python", "-c", "import os; exit(0)"]
+            initialDelaySeconds: 30
+            periodSeconds: 60
+        {{- end }}
+      volumes:
+        - name: scratch
+          emptyDir:
+            sizeLimit: {{ .Values.worker.scratch.sizeLimit | quote }}
+        # HOME and the libraries' caches. Separate from scratch, which holds the
+        # untrusted input.
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.worker.tmp.sizeLimit | quote }}
+        {{- if .Values.worker.parser.enabled }}
+        # The parser's HOME and temp files, apart from the worker's.
+        - name: parser-tmp
+          emptyDir:
+            sizeLimit: {{ .Values.worker.parser.tmp.sizeLimit | quote }}
+        {{- end }}
+      {{- if .Values.worker.gpu.enabled }}
+      nodeSelector:
+        {{- toYaml .Values.worker.gpu.nodeSelector | nindent 8 }}
+      tolerations:
+        {{- toYaml .Values.worker.gpu.tolerations | nindent 8 }}
+      {{- end }}

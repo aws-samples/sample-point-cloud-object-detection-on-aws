@@ -1,0 +1,11 @@
+# CI-only values: a port-forward render, used by helm lint and the nginx syntax check.
+image:
+  repository: 111122223333.dkr.ecr.us-east-1.amazonaws.com/pointcloud-detection-frontend
+  tag: 0123abc
+accessMode: port-forward
+portForward:
+  group: pointcloud-detection-app-clients
+aws:
+  s3:
+    # A name reserved by AWS for examples, so no one can own a bucket by that name.
+    inputBucket: amzn-s3-demo-bucket

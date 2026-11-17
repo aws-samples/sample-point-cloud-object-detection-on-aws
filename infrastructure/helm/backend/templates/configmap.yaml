@@ -1,0 +1,78 @@
+{{- if not (has .Values.jobStore.backend (list "memory" "dynamodb")) }}
+{{- fail (printf "jobStore.backend=%q is not a valid job store backend. Valid values: memory, dynamodb. The application rejects unknown values at startup, so this would crashloop the API rather than silently degrade." .Values.jobStore.backend) }}
+{{- end }}
+{{- if not (has .Values.worker.device (list "auto" "cpu" "gpu")) }}
+{{- fail (printf "worker.device=%q is not a valid worker capability. Valid values: auto, cpu, gpu. A typo here silently stops the pool accepting anything except matching jobs, and jobs no pool accepts are reported failed once their SQS delivery attempts run out." .Values.worker.device) }}
+{{- end }}
+{{- if and (eq .Values.jobStore.backend "dynamodb") (not .Values.jobStore.tableName) }}
+{{- fail "jobStore.backend=dynamodb requires jobStore.tableName. Without it JOBS_TABLE_NAME renders empty, the API raises at startup and crashloops. Pass --set jobStore.tableName=$(terraform output -raw jobs_table_name), or set jobStore.backend=memory for single-replica local dev." }}
+{{- end }}
+{{- if not (has .Values.accessMode (list "public" "port-forward")) }}
+{{- fail (printf "accessMode=%q is not valid. Use public or port-forward, the same value as the frontend chart." .Values.accessMode) }}
+{{- end }}
+{{- if and (eq .Values.accessMode "public") (not .Values.networkPolicy.albSourceCidrs) }}
+{{- fail "networkPolicy.albSourceCidrs is required in public mode. The ALB targets api pod IPs directly, so without its source CIDRs (terraform output public_subnet_cidrs) the policy blocks all API traffic, and uvicorn would not know which proxy's forwarded headers to trust." }}
+{{- end }}
+{{- if and (eq .Values.accessMode "public") (not .Values.publicHost) }}
+{{- fail "publicHost is required in public mode: the API serves only the hostname the ALB forwards (INGRESS_HOST) and its in-cluster names, so without it every request through the ALB is refused." }}
+{{- end }}
+{{- $scope := .Values.accessScope | default (ternary "per-user" "shared" (eq .Values.accessMode "public")) }}
+{{- if not (has $scope (list "per-user" "shared")) }}
+{{- fail (printf "accessScope=%q is not valid. Use per-user (each signed-in user reaches only their own jobs), shared (every caller reaches every job), or leave it empty for the access mode's default." $scope) }}
+{{- end }}
+{{- if and (eq $scope "per-user") (ne .Values.accessMode "public") }}
+{{- fail "accessScope=per-user needs accessMode=public: the API takes each user's identity from the ALB's signed sign-in claims, and a port-forward tunnel carries none. Use accessScope=shared in port-forward mode." }}
+{{- end }}
+{{- if and (eq $scope "per-user") (ne .Values.jobStore.backend "dynamodb") }}
+{{- fail "accessScope=per-user needs jobStore.backend=dynamodb, where each job records its owner. The API refuses to start otherwise." }}
+{{- end }}
+{{- if and (eq $scope "per-user") (or (not .Values.identity.userPoolId) (not .Values.identity.clientId)) }}
+{{- fail "accessScope=per-user needs identity.userPoolId and identity.clientId (terraform output cognito, user_pool_id and client_id): the API checks that each request's sign-in came from that pool and app client. deploy.sh passes them." }}
+{{- end }}
+{{- $svc := printf "api.%s" .Values.namespace }}
+{{- $hosts := list "localhost" "127.0.0.1" "api" $svc (printf "%s.svc" $svc) (printf "%s.svc.cluster.local" $svc) }}
+{{- if eq .Values.accessMode "public" }}
+{{- $hosts = append $hosts (lower .Values.publicHost) }}
+{{- end }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: backend-config
+  namespace: {{ .Values.namespace }}
+data:
+  AWS_REGION: {{ .Values.aws.region }}
+  S3_INPUT_BUCKET: {{ .Values.aws.s3.inputBucket }}
+  S3_OUTPUT_BUCKET: {{ .Values.aws.s3.outputBucket }}
+  S3_TILES_BUCKET: {{ .Values.aws.s3.tilesBucket }}
+  S3_MODELS_BUCKET: {{ .Values.aws.s3.modelsBucket }}
+  SQS_QUEUE_URL: {{ .Values.aws.sqs.queueUrl }}
+  JOB_STORE_BACKEND: {{ .Values.jobStore.backend | quote }}
+  JOBS_TABLE_NAME: {{ .Values.jobStore.tableName | quote }}
+  # Retention for job records. Must match the TTL attribute on the DynamoDB table
+  # (expires_at); the job list is a full table Scan, so without expiry the table and
+  # every list call grow without bound.
+  JOBS_TTL_DAYS: {{ .Values.jobStore.ttlDays | quote }}
+  # Delivery count at which the worker marks a job failed rather than leaving it for
+  # redelivery. Keep <= the queue's redrive maxReceiveCount.
+  SQS_MAX_RECEIVE_COUNT: {{ .Values.jobStore.maxReceiveCount | quote }}
+  API_BASE_URL: "http://api.{{ .Values.namespace }}.svc.cluster.local"
+  CORS_ALLOWED_ORIGINS: {{ .Values.cors.allowedOrigins | quote }}
+  # The Host names the API serves (src/pointcloud_detect/api/hosts.py); anything else
+  # gets 421. Closes DNS rebinding on the api tunnel, as nginx does on the frontend's.
+  ALLOWED_HOSTS: {{ join "," $hosts | quote }}
+  # Who reaches what (values.yaml accessScope, threat model T31). In per-user mode the
+  # API verifies the ALB's signed claims against these; an empty ALB_ARN means the
+  # ALB does not exist yet, and /api answers 503 until deploy.sh sets it.
+  ACCESS_SCOPE: {{ $scope | quote }}
+  ALB_ARN: {{ .Values.identity.albArn | quote }}
+  COGNITO_USER_POOL_ID: {{ .Values.identity.userPoolId | quote }}
+  COGNITO_CLIENT_ID: {{ .Values.identity.clientId | quote }}
+  # Defence in depth for E57 (T54): pye57's bundled Xerces-C parses the file's XML
+  # section, and this tells it to refuse a DTD, and so any external entity, if the
+  # build honours it. The parser container sets it too, since it takes no envFrom.
+  XERCES_DISABLE_DTD: "1"
+  # Opt-in for the non-commercially licensed pretrained checkpoints (values.yaml
+  # models.allowNoncommercialWeights). "0" means checkpoints.fetch() refuses them.
+  ALLOW_NONCOMMERCIAL_WEIGHTS: {{ ternary "1" "0" .Values.models.allowNoncommercialWeights | quote }}
+  LOG_LEVEL: {{ .Values.logging.level }}
+  LOG_FORMAT: {{ .Values.logging.format }}

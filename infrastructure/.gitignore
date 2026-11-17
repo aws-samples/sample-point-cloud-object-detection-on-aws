@@ -1,0 +1,22 @@
+# Terraform provider plugins and modules cache
+.terraform/
+
+# State files — may contain secrets, never commit
+*.tfstate
+*.tfstate.*
+terraform.tfstate.d/
+
+# Crash / plan output
+crash.log
+crash.*.log
+*.tfplan
+*.tfplan.bin
+
+# Variable files that may hold secrets (dev tfvars is intentionally tracked)
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# The provider lock file (.terraform.lock.hcl) is intentionally committed.

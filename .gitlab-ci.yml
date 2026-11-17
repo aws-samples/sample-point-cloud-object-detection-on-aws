@@ -1,0 +1,294 @@
+# GitLab CI.
+#
+# This mirrors .github/workflows/ci.yml, which never ran: that workflow is GitHub
+# Actions and this repository lives on GitLab, so until now nothing gated any merge
+# request. Both files are kept because the project is destined for GitHub, and the
+# checks should be identical wherever they run.
+#
+# Every job here blocks except `pyright`, which is documented below.
+#
+# Every image is pinned by digest (the tag alongside is for the reader; the digest is
+# what is pulled), from its verified ECR Public repository where one exists. Tool
+# versions match .github/workflows/ci.yml, the Dockerfiles and the local toolchain:
+#   uv 0.12.19          (Dockerfile, Dockerfile.gpu, setup-uv in the GitHub workflow)
+#   Node.js 22          (frontend/Dockerfile)
+#   helm v3.21.4        (setup-helm in the GitHub workflow)
+#   terraform 1.15.8    (setup-terraform in the GitHub workflow; infrastructure
+#                        requires >= 1.10)
+# The nginx image in the `nginx` job is exactly the one frontend/Dockerfile ships.
+
+stages:
+  - test
+
+default:
+  interruptible: true
+
+# Cancel superseded runs on the same ref.
+workflow:
+  auto_cancel:
+    on_new_commit: interruptible
+
+frontend:
+  stage: test
+  image: public.ecr.aws/docker/library/node:22@sha256:363e1587494626837fa7f9a23bdb453d13b0ff3c67c705c2805cfc69c2d2fad7
+  needs: []
+  cache:
+    key:
+      files:
+        - frontend/package-lock.json
+    paths:
+      - frontend/node_modules/
+  before_script:
+    - cd frontend
+    - npm ci
+  script:
+    - npm run lint
+    # `build` runs tsc then vite build, so this covers type-checking too.
+    - npm run build
+    - npm test
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+backend:
+  stage: test
+  image: public.ecr.aws/docker/library/python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f
+  needs: []
+  variables:
+    UV_CACHE_DIR: .uv-cache
+  cache:
+    key:
+      files:
+        - uv.lock
+    paths:
+      - .uv-cache/
+  before_script:
+    - pip install --no-cache-dir uv==0.12.19
+    # `io` is not optional for the test suite. Without it laspy/pye57/trimesh are
+    # absent, 26 tests skip themselves, and the handful that have no skip guard fail
+    # outright. This matches the setup README.md documents for contributors.
+    - uv sync --locked --extra dev --extra api --extra io --extra viz
+  script:
+    - uv run ruff check .
+    # Formatting is enforced, not merely suggested. `ruff check` alone let seven files
+    # drift out of format while `terraform fmt -check` below kept HCL in line, so the
+    # two languages held different standards. Run `uv run ruff format .` to fix.
+    - uv run ruff format --check .
+    # -rs so the skip reasons are on the record. Only mmdet3d should skip: it installs
+    # via mim, not pip, so it is genuinely unavailable here. The Helm render tests also
+    # skip, because this image has no helm; the `helm` job runs them. Any other skip
+    # reason means a dependency regressed out of the sync above and tests stopped
+    # running. The invariant-rule tests skip too, with no semgrep here; the
+    # `invariants` job runs them.
+    - uv run pytest tests/ -q -rs
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Blocking, like every other job here.
+#
+# This ran with allow_failure for exactly one merge request. At that point pyright
+# reported 145 errors, all pre-existing and none of them ever visible because no
+# pipeline had run on this repository. They are now at zero, so the flag is gone and a
+# new type error fails the pipeline.
+#
+# If this job goes red, fix the error. Do not reintroduce allow_failure, raise a
+# threshold, or narrow typeCheckingMode to make it pass. The suppressions that do
+# exist are inline, per-import, and explained under [tool.pyright] in pyproject.toml.
+pyright:
+  stage: test
+  image: public.ecr.aws/docker/library/python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f
+  needs: []
+  variables:
+    UV_CACHE_DIR: .uv-cache
+    # The Node release pyright-python's nodeenv installs. Unset, nodeenv takes the
+    # newest release on nodejs.org, so the job changed under us with no commit here:
+    # it broke when that became 27.0.0-alpha, whose version string nodeenv cannot
+    # parse ("invalid literal for int() ... '0-alpha'"). Pinned to a Node 22 LTS
+    # release, the major the frontend image builds with.
+    PYRIGHT_PYTHON_NODE_VERSION: "22.23.4"
+  cache:
+    key:
+      files:
+        - uv.lock
+    paths:
+      - .uv-cache/
+  before_script:
+    # pyright-python runs the real pyright, which is a Node program: it downloads a
+    # prebuilt Node binary on first use, and that binary is dynamically linked against
+    # libatomic.so.1, which python:3.12-slim does not ship. Without this the job dies
+    # with "error while loading shared libraries: libatomic.so.1" before pyright starts,
+    # so it reports no type errors while appearing to have run. That is exactly what
+    # happened for as long as this job carried allow_failure.
+    - apt-get update -qq && apt-get install -y -qq --no-install-recommends libatomic1
+    - pip install --no-cache-dir uv==0.12.19
+    - uv sync --locked --extra dev --extra api --extra io --extra viz
+  script:
+    # No --outputjson wrapper here. An earlier revision piped it through a JSON parse to
+    # assert filesAnalyzed > 0, but nodeenv prints a Python-style dict to stdout on a
+    # cold cache, so the parse threw and the guard silently did nothing. The job is
+    # blocking, so a bootstrap failure already fails it -- which is how the libatomic
+    # problem above was found.
+    - uv run pyright
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# The reviewed scanner findings as rules (.semgrep/invariants.yaml): the tree must
+# satisfy them, and each must still catch a mutation of the line it guards. A
+# suppression comment then holds only while its reason does. REQUIRE_SEMGREP=1 makes a
+# missing semgrep fail rather than skip. The tests need only pytest and semgrep, not
+# the project's dependencies. Kept in step with the `invariants` job in the GitHub
+# workflow; semgrep matches the version of the pre-publication review.
+invariants:
+  stage: test
+  image: public.ecr.aws/docker/library/python:3.12-slim@sha256:12316debbfb86890f6b2d825820612741ba527ad5a44e3902759141d572bfe8f
+  needs: []
+  variables:
+    REQUIRE_SEMGREP: "1"
+  before_script:
+    - pip install --no-cache-dir uv==0.12.19
+  script:
+    - >-
+      uv run --no-project --python 3.12
+      --with pytest==9.0.3 --with semgrep==1.178.0
+      pytest tests/test_invariant_rules.py tests/test_proc_helper.py -q -rs
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+terraform:
+  stage: test
+  image:
+    name: public.ecr.aws/hashicorp/terraform:1.15.8@sha256:7ae513256f7ce67879e218ae8593d6fbe216ec9e123abe6c94e4e10704857963
+    entrypoint: [""]
+  needs: []
+  before_script:
+    - cd infrastructure
+  script:
+    - terraform fmt -check -recursive
+    # validate needs init, but must not touch remote state or require cloud
+    # credentials. -backend=false initialises providers and modules only, which is
+    # all validate needs.
+    - terraform init -backend=false
+    - terraform validate
+    # Plan-only tests of every module that has them (a tests/ directory), such as the
+    # Cognito client against the ELB requirements. The AWS provider is mocked, so this
+    # needs no credentials. Kept in step with the `terraform` job in the GitHub workflow.
+    - |
+      for tests in modules/*/tests; do
+        module="$(dirname "${tests}")"
+        echo "== terraform test: ${module}"
+        terraform -chdir="${module}" init -backend=false || exit 1
+        terraform -chdir="${module}" test || exit 1
+      done
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# The API has no authentication code: sign-in is the ALB's Cognito action and the
+# port-forward gate is RBAC, and both exist only as rendered manifests. The render tests
+# are what pins them, so they run here with REQUIRE_HELM=1, which makes a missing helm
+# fail rather than skip. Kept in step with the `helm` job in .github/workflows/ci.yml.
+helm:
+  stage: test
+  image:
+    # No ECR Public mirror; Docker Hub, pinned by digest.
+    name: alpine/helm:3.21.4@sha256:82c0ce1b4196539946ed01bdfd9345cf74ca999b95d3074ce3f2f5ea45c96e80
+    entrypoint: [""]
+  needs: []
+  before_script:
+    # The render tests need only pytest and PyYAML, not the project's dependencies.
+    - apk add --no-cache python3 py3-pytest py3-yaml
+  script:
+    - |
+      for chart in frontend backend; do
+        for mode in public port-forward; do
+          helm lint "infrastructure/helm/${chart}" -f "infrastructure/helm/${chart}/ci/${mode}-values.yaml"
+        done
+      done
+    # The training chart has no access modes. Its CI values supply what an operator
+    # passes at install time, which the chart requires.
+    - helm lint infrastructure/helm/training -f infrastructure/helm/training/ci/default-values.yaml
+    - REQUIRE_HELM=1 python3 -m pytest tests/test_helm_render.py tests/test_helm_hardening.py -q -rs
+    - mkdir -p rendered
+    - |
+      for mode in public port-forward; do
+        sh infrastructure/helm/frontend/ci/render-nginx.sh "${mode}" > "rendered/nginx-${mode}.conf"
+      done
+  artifacts:
+    paths:
+      - rendered/
+    expire_in: 1 day
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# `nginx -t` on the server blocks the frontend chart renders, in the image the frontend
+# runs on. The config is templated per access mode, so the image's own copy proves
+# nothing about it.
+nginx:
+  stage: test
+  image:
+    name: public.ecr.aws/nginx/nginx-unprivileged:alpine@sha256:03df07e5931f8374d440bd62243a5ce9b24719715ef6fc4c9c626a5f1dbef417
+    entrypoint: [""]
+  needs: [helm]
+  script:
+    - sh infrastructure/helm/frontend/ci/nginx-test.sh rendered/nginx-public.conf rendered/nginx-port-forward.conf
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Errors and warnings block; info and style notes do not. Kept in step with the
+# `shellcheck` job in the GitHub workflow.
+shellcheck:
+  stage: test
+  image:
+    name: koalaman/shellcheck-alpine:v0.11.0@sha256:9955be09ea7f0dbf7ae942ac1f2094355bb30d96fffba0ec09f5432207544002
+    entrypoint: [""]
+  needs: []
+  script:
+    # find, not globs: the published export has no scripts/publication, and a glob
+    # that matches nothing reaches ShellCheck as a literal path it cannot open.
+    - >-
+      shellcheck --severity=warning
+      $(find infrastructure/scripts infrastructure/helm/frontend/ci scripts -name '*.sh' | sort)
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Secrets in every commit of the branch, not only the tip: a secret removed later is
+# still in history. GIT_DEPTH 0 is what makes that history available. Kept in step with
+# the `gitleaks` job in the GitHub workflow.
+gitleaks:
+  stage: test
+  image:
+    name: ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f
+    entrypoint: [""]
+  needs: []
+  variables:
+    GIT_DEPTH: "0"
+  script:
+    - gitleaks git --redact --verbose .
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+
+# Known vulnerabilities in both lockfiles, secrets in the tree, and misconfigurations in
+# the Dockerfiles, Terraform, Helm charts and both CI files. HIGH and CRITICAL block.
+# Checkov is not run here: the open-source CLI cannot filter by severity, so as a gate it
+# would block on every LOW, and as an allow_failure job nobody reads it. It is part of
+# the pre-publication review instead. Kept in step with the `trivy` job in the GitHub
+# workflow.
+trivy:
+  stage: test
+  image:
+    name: public.ecr.aws/aquasecurity/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+    entrypoint: [""]
+  needs: []
+  script:
+    - trivy fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 .
+    - trivy config --severity HIGH,CRITICAL --exit-code 1 .
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

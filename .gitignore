@@ -1,0 +1,60 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+
+# Local dev data
+local_dev_data/
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+.terraform.lock.hcl
+# scripts/plan-adoption.sh output. Generated import blocks carry empty `id = ""` TODOs,
+# so committing them would break every subsequent plan.
+infrastructure/adoption/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Node (frontend)
+node_modules/
+frontend/dist/
+frontend/node_modules/
+
+# Models (large files — ship via release/S3, not git)
+models/*.pth
+models/*.pt
+
+# Output
+output/
+
+# Local review artifacts (internal only — must not reach the public repo)
+semantic-review/
+
+# Internal coordination notes (name individuals, internal branch/MR refs, and
+# unmitigated security findings). Must not reach the public repo — keep these in
+# the team wiki, not in git.
+docs/UI_BACKEND_DEPENDENCIES.md
+
+# Internal planning and coordination artifacts. These are working documents for the
+# team, not part of the published guidance: AI-DLC process output including a
+# verbatim meeting transcript, per-person task assignments and dates, and internal
+# review/process references. Kept locally, excluded from the repo.
+aidlc-docs/
+docs/task-tracker.md
+docs/meeting-agenda.md
+
+# Terraform plan artifacts
+infrastructure/tfplan
+*.tfplan

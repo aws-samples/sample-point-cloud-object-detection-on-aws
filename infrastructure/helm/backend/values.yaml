@@ -1,0 +1,270 @@
+image:
+  repository: ""  # Set to ECR URL: <account>.dkr.ecr.<region>.amazonaws.com/pointcloud-detection-backend
+  # Required, and never latest: the immutable tag build-push.sh pushed (the git
+  # SHA), which deploy.sh passes. Rendering fails without it.
+  tag: ""
+  # A tag names one build, so a node that already has it need not pull again.
+  pullPolicy: IfNotPresent
+
+namespace: pointcloud-detection
+
+api:
+  replicas: 2
+  port: 8000
+  resources:
+    requests:
+      cpu: 500m
+      memory: 1Gi
+    limits:
+      cpu: 2000m
+      memory: 4Gi
+  # /tmp, the container's only writable path: the root filesystem is read-only.
+  tmp:
+    sizeLimit: 1Gi
+
+worker:
+  replicas: 1
+  # Which jobs this pool accepts, matched against a job's device_preference:
+  #   auto - accept everything (default; a single homogeneous pool wants this)
+  #   cpu  - accept only cpu and auto jobs
+  #   gpu  - accept only gpu and auto jobs
+  #
+  # Only set this away from "auto" when running more than one worker pool. All pools
+  # share one queue, and declining a message costs one of its delivery attempts, so a
+  # job that no deployed pool accepts is reported failed once its attempts run out.
+  # With device routing in use, raise the queue's maxReceiveCount (Terraform
+  # var.max_receive_count and jobStore.maxReceiveCount) to leave room for the bounces.
+  device: auto
+  # The worker container. With the parser container on (worker.parser.enabled) the pod
+  # requests what one worker used to: worker plus parser requests are 2000m and 8Gi, so
+  # a worker still schedules on the smallest node in each pool (g4dn.xlarge and
+  # m5.xlarge, 4 vCPU and 16 GiB). The limits overcommit on purpose: for one job the
+  # parser converts the file first, then the worker reads it, so the two peak in turn.
+  resources:
+    requests:
+      cpu: 1500m
+      memory: 6Gi
+    limits:
+      cpu: 4000m
+      memory: 16Gi
+  # Scratch for the downloaded input and the on-disk tile extracts, which for a 50 GB
+  # scene run to several times the input size. A dedicated emptyDir, rather than the
+  # container's writable layer, so the kubelet can account for it and evict this pod
+  # -- not a co-tenant -- when it outgrows sizeLimit. TMPDIR and PCD_EXTRACT_DIR both
+  # point here.
+  scratch:
+    sizeLimit: 150Gi
+    # Scheduling request only. Deliberately far below sizeLimit: a request is reserved
+    # on the node, and one sized for the largest scene would leave most nodes unable
+    # to schedule a worker at all.
+    ephemeralStorageRequest: 10Gi
+    # With the parser container the scene is also here in canonical form (at most 31
+    # bytes a point, pointcloud_detect.io_readers), under scratch/ipc: about the size
+    # of an uncompressed LAS, up to ten times a LAZ. It shares this limit, which stays
+    # at 150Gi because the GPU nodes' root volume, which backs emptyDirs, is 200 GB by
+    # default. The largest scene that fits is therefore smaller for compressed inputs;
+    # raise root_volume_size and this together for bigger ones.
+  # /tmp and HOME, apart from scratch: the libraries' caches, including the pretrained
+  # checkpoints torch hub downloads in the GPU image (a few hundred MB for every model).
+  tmp:
+    sizeLimit: 4Gi
+  # T11: the native parsers (laspy/lazrs, pye57, trimesh) run over uploaded files in a
+  # second container of the worker pod, with no AWS credentials, no service-account
+  # token and a uid of its own. It turns each input into a canonical file under
+  # /scratch/ipc that the worker reads with numpy alone. false puts the parsers back
+  # in the worker process, next to its credentials; add the parser's requests to
+  # worker.resources if you do.
+  #
+  # Its memory limit is the worker's own, 16Gi, not less: in sidecar mode every
+  # whole-load parse (PLY, KITTI .bin, and any format when the job sets max_points)
+  # runs here, where the worker process used to run it, and tiling.memory_budget_gb
+  # still defaults to 16 GB. A lower limit would OOM-kill, as "crashed", files that
+  # parsed before. The requests are what the parser needs at rest; the limits
+  # overcommit for the reason given at worker.resources.
+  parser:
+    enabled: true
+    resources:
+      requests:
+        cpu: 500m
+        memory: 2Gi
+      limits:
+        cpu: 2000m
+        memory: 16Gi
+    # The parser's own /tmp and HOME.
+    tmp:
+      sizeLimit: 1Gi
+  gpu:
+    enabled: true
+    nodeSelector:
+      workload-type: gpu
+    tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+    resources:
+      limits:
+        nvidia.com/gpu: "1"
+
+# Queue-depth autoscaling. KEDA is the supported path; see scaledobject-worker.yaml.
+keda:
+  enabled: true
+  minReplicaCount: 0   # 0 lets the GPU node group drain back to zero
+  maxReplicaCount: 10
+  queueLength: 2       # target visible+in-flight messages per worker replica
+  pollingInterval: 30  # seconds between SQS GetQueueAttributes calls
+  cooldownPeriod: 300  # seconds at 0 backlog before scaling to minReplicaCount
+  scaleUpPodsPerMinute: 3
+
+# Legacy path, DISABLED and mutually exclusive with keda.enabled.
+#
+# This HPA targets the external metric `sqs_queue_messages_visible`, which nothing
+# in this repo publishes — there is no prometheus-adapter or CloudWatch metrics
+# adapter in scripts/deploy.sh. Enabled without such an adapter the metric resolves
+# to <unknown> and the worker never scales above minReplicas. It is kept only for
+# operators who already run an external metrics provider; if you enable it, set
+# keda.enabled=false and install that adapter yourself.
+#
+# Note minReplicas cannot be 0 here: HPA scale-to-zero needs the HPAScaleToZero
+# feature gate, which EKS does not expose. That pins one GPU worker permanently.
+hpa:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetQueueDepth: 2
+
+# API pods run as backend-sa -> annotate with the backend-role ARN (S3 rw + SQS SendMessage).
+serviceAccount:
+  name: backend-sa
+  annotations: {}  # Set eks.amazonaws.com/role-arn to pointcloud-detection-dev-backend-role
+
+# Worker pods run as worker-sa -> annotate with the worker-role ARN
+# (S3 rw + SQS Receive/Delete/ChangeMessageVisibility). Must be a separate SA:
+# each IRSA role's trust policy is OIDC-scoped to its own service-account name.
+workerServiceAccount:
+  name: worker-sa
+  annotations: {}  # Set eks.amazonaws.com/role-arn to pointcloud-detection-dev-worker-role
+
+# @secure_recommendation: pod-security baseline, and the Pod Security Standard
+# "restricted" profile the namespace enforces. The image already runs as non-root
+# (appuser), so runAsNonRoot is enforceable. Drop all Linux capabilities, block privilege
+# escalation, apply the default seccomp profile, and keep the root filesystem read-only:
+# the containers write only to their /tmp emptyDir (HOME) and the worker's /scratch,
+# and run the venv's interpreter directly rather than through `uv run`, which syncs
+# the venv first.
+securityContext:
+  pod:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+  container:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+# How users reach the API; must match the frontend chart's accessMode. Users do not
+# authenticate to the API itself in either mode, so this decides who the NetworkPolicy
+# lets reach it.
+#   public       only the ALB, which authenticates every request with Cognito first
+#   port-forward only the frontend pods, whose nginx proxies /api
+# Port-forwards to the api pods themselves (programmatic access) arrive inside the pod
+# and are gated by Kubernetes RBAC, not by this.
+accessMode: public
+
+# Public mode: the hostname users open (INGRESS_HOST), the Host the ALB forwards.
+# Required there. The API serves only this, its own in-cluster Service names, and
+# localhost and 127.0.0.1 for the tunnels (ALLOWED_HOSTS in configmap.yaml), so a
+# DNS-rebinding page that reaches the api tunnel is refused on its own Host.
+publicHost: ""
+
+# Who reaches what (threat model T31):
+#   per-user  each signed-in user reaches only the jobs, uploads, results, annotations,
+#             training and fine-tuned models they created. The API verifies the ALB's
+#             signed user claims on every /api request (src/pointcloud_detect/api/
+#             identity.py) and refuses any request without them, including a
+#             port-forward to the api Service.
+#   shared    every caller reaches everything, for one team whose members may all see
+#             each other's scans. The README's warning applies.
+# Empty is the default for the access mode: per-user in public mode, and shared in
+# port-forward mode, whose tunnel carries no user identity, so per-user is refused there.
+accessScope: ""
+
+# per-user only: the ALB that signs users in, and the Cognito user pool and app client
+# it signs them in with. deploy.sh passes all three: the pool and client from
+# `terraform output cognito`, and the ALB's ARN once the Load Balancer Controller has
+# created it. Until albArn is set, the API answers every /api request with 503.
+identity:
+  albArn: ""
+  userPoolId: ""
+  clientId: ""
+
+# Comma-separated origins allowed to call the API from another origin. Leave empty
+# for the shipped deployment: the frontend and /api are served from one origin in both
+# access modes.
+cors:
+  allowedOrigins: ""
+
+# NetworkPolicies: the namespace default-deny and the api and worker allow-policies.
+# They are enforced only when the VPC CNI runs with enableNetworkPolicy, which the
+# Terraform eks module sets.
+networkPolicy:
+  enabled: true
+  # CIDRs the ALB connects to api pods from: the public subnets (terraform output
+  # public_subnet_cidrs). Required in public mode -- with target-type ip the ALB
+  # reaches pod IPs directly, so without these the policy would block all API traffic.
+  # uvicorn also trusts X-Forwarded-Proto and X-Forwarded-For from these addresses only
+  # (--forwarded-allow-ips), so its redirects say https and its logs name the client.
+  albSourceCidrs: []
+  # The VPC CIDR (terraform output vpc_cidr). Required. api and worker egress on 443
+  # is allowed to anywhere except this range, so a compromised pod can reach AWS APIs
+  # and the checkpoint host but not the cluster API, other pods, or node services.
+  vpcCidr: ""
+  # enabled=false renders no policy, including the namespace default-deny. The API has
+  # no authentication of its own, so that opens every route to every pod in the
+  # cluster; rendering refuses it unless this is set too, to say another control
+  # (another CNI's policies, say) does the job.
+  acknowledgeUnprotectedApi: false
+
+# Job store backend. "dynamodb" is the supported multi-replica path: job state is
+# shared across all API replicas and the worker, so the dashboard list is consistent
+# and worker status updates always land. "memory" is a process-local dict for local
+# dev only and is incorrect with api.replicas > 1. When backend is "dynamodb", set
+# tableName to the DynamoDB table (terraform output jobs_table_name).
+jobStore:
+  backend: dynamodb
+  tableName: ""  # e.g. pointcloud-detection-dev-jobs
+  # Delivery count at which the worker gives up and marks a job failed. Must be <=
+  # the queue's redrive maxReceiveCount (Terraform var.max_receive_count, default 3).
+  # Setting it higher means the message reaches the DLQ first and the job is never
+  # marked failed, so it sits in "processing" forever.
+  maxReceiveCount: 3
+  # Job-record retention in days, written as the expires_at TTL attribute. Keep in
+  # step with the table's ttl_days Terraform variable. 0 disables expiry, which lets
+  # the Scan-backed job list grow without bound — only sensible for short-lived dev.
+  ttlDays: 90
+
+aws:
+  region: us-east-1
+  s3:
+    inputBucket: ""
+    outputBucket: ""
+    tilesBucket: ""
+    modelsBucket: ""
+  sqs:
+    queueUrl: ""
+
+logging:
+  level: INFO
+  format: json
+
+# Pretrained model weights. Every pretrained checkpoint this sample can download was
+# trained on a dataset licensed for non-commercial use only, so none is fetched unless
+# you opt in here (ALLOW_NONCOMMERCIAL_WEIGHTS, src/pointcloud_detect/backends/
+# checkpoints.py). Off, the API refuses jobs that need them and detection runs only
+# with a model you trained or registered (README, "Commercially clean model").
+# Set true only if your use of those weights is permitted by their dataset licenses.
+models:
+  allowNoncommercialWeights: false

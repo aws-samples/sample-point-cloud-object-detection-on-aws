@@ -1,0 +1,97 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+  namespace: {{ .Values.namespace }}
+  labels:
+    app: api
+  annotations:
+    # checkov:skip=CKV_K8S_15 in annotation form. IfNotPresent is deliberate: the tag
+    # is required, never latest, and names one immutable build (T29), so a node that
+    # has it holds the same bytes a pull would fetch.
+    checkov.io/skip1: CKV_K8S_15=Immutable tag required by the chart; IfNotPresent is safe
+spec:
+  replicas: {{ .Values.api.replicas }}
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+      annotations:
+        # Both containers read their configuration through `envFrom: configMapRef`,
+        # which Kubernetes injects only at container start. Without this the pod spec
+        # is unchanged by a ConfigMap edit, so `helm upgrade` reports success and the
+        # running pods keep the old values until they happen to restart for another
+        # reason — a change that looks applied but is not. Hashing the rendered
+        # ConfigMap changes the pod template whenever its contents change, which rolls
+        # the pods.
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Values.serviceAccount.name }}
+      # Nothing here calls the Kubernetes API, so no token is mounted for a foothold
+      # to use. IRSA is unaffected: the pod-identity webhook injects its own projected
+      # token volume, which does not depend on this setting.
+      automountServiceAccountToken: false
+      securityContext:
+        {{- toYaml .Values.securityContext.pod | nindent 8 }}
+      containers:
+        - name: api
+          image: {{ include "pcd.image" . | quote }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          securityContext:
+            {{- toYaml .Values.securityContext.container | nindent 12 }}
+          # The venv's own entry point, not `uv run`: uv syncs the venv before it runs,
+          # which a read-only root filesystem cannot allow.
+          command:
+            - /app/.venv/bin/uvicorn
+            - pointcloud_detect.api.app:app
+            - --host
+            - 0.0.0.0
+            - --port
+            - "{{ .Values.api.port }}"
+            {{- if eq .Values.accessMode "public" }}
+            # Behind the ALB, trust X-Forwarded-Proto and X-Forwarded-For from its
+            # subnets only, so trailing-slash redirects say https rather than http and
+            # the client address is the user's (T57, T45). Anything else that reaches
+            # the pod cannot spoof either header. Port-forward mode has no proxy to
+            # trust.
+            - --proxy-headers
+            - --forwarded-allow-ips={{ join "," .Values.networkPolicy.albSourceCidrs }}
+            {{- end }}
+          ports:
+            - containerPort: {{ .Values.api.port }}
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: backend-config
+          env:
+            {{- include "pcd.runtimeEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            requests:
+              cpu: "{{ .Values.api.resources.requests.cpu }}"
+              memory: "{{ .Values.api.resources.requests.memory }}"
+            limits:
+              cpu: "{{ .Values.api.resources.limits.cpu }}"
+              memory: "{{ .Values.api.resources.limits.memory }}"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.api.port }}
+            initialDelaySeconds: 10
+            periodSeconds: 30
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: {{ .Values.api.port }}
+            initialDelaySeconds: 5
+            periodSeconds: 10
+      volumes:
+        # The only writable path: the root filesystem is read-only.
+        - name: tmp
+          emptyDir:
+            sizeLimit: {{ .Values.api.tmp.sizeLimit | quote }}

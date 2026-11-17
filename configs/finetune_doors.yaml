@@ -1,0 +1,33 @@
+# Fine-tuning config: Door detection
+# Base: VoteNet ScanNet (18-class) → fine-tune to single-class door detection
+# Data: ScanNet scenes filtered to door annotations only
+#
+# Usage:
+#   python -m pointcloud_detect.training.trainer --config configs/finetune_doors.yaml
+
+base_model: "votenet_scannet"
+# Non-commercially licensed checkpoint: needs ALLOW_NONCOMMERCIAL_WEIGHTS=1 (README,
+# "Pretrained weights and licensing"). Use scratch or your own .pth otherwise.
+base_weights: "pretrained"
+
+data_path: "./data/annotations/scannet_doors"
+val_split: 0.2
+output_path: "./models/doors_detection"
+
+epochs: 30
+learning_rate: 0.0005    # Lower than default — fine-tuning, not training from scratch
+batch_size: 4
+num_workers: 4
+checkpoint_interval: 5
+early_stopping_patience: 10
+
+augmentation:
+  random_flip: true
+  random_rotate: true
+  random_scale: [0.95, 1.05]  # Gentle scaling — doors have consistent size
+  random_jitter: 0.01
+
+custom_classes:
+  - door
+
+run_on_eks: false

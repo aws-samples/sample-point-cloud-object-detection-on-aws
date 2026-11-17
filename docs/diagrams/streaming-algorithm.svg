@@ -1,0 +1,100 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 960 1180" font-family="'Segoe UI', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="5" orient="auto" markerUnits="userSpaceOnUse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+    </marker>
+    <style>
+      .title { font-size: 26px; font-weight: 700; fill: #0f172a; }
+      .subtitle { font-size: 14px; fill: #475569; }
+      .phase-label { font-size: 13px; font-weight: 700; letter-spacing: 1px; }
+      .box-title { font-size: 15px; font-weight: 700; }
+      .box-text { font-size: 12.5px; }
+      .em { font-weight: 700; }
+      .flow { stroke: #94a3b8; stroke-width: 2; fill: none; }
+    </style>
+  </defs>
+
+  <rect width="960" height="1180" fill="#ffffff"/>
+
+  <text x="40" y="46" class="title">Streaming Ingest &#8212; store-once + neighbor reconstruction</text>
+  <text x="40" y="70" class="subtitle">Detect on point clouds larger than memory (LAS / LAZ / E57, 50 GB+) with peak RAM bounded to a single tile.</text>
+
+  <!-- Source -->
+  <rect x="330" y="92" width="300" height="52" rx="8" fill="#334155"/>
+  <text x="480" y="116" text-anchor="middle" class="box-title" fill="#fff">Large point cloud on disk</text>
+  <text x="480" y="134" text-anchor="middle" class="box-text" fill="#cbd5e1">LAS / LAZ / E57 &#8212; up to 50 GB+</text>
+  <path d="M480,144 L480,172" class="flow" marker-end="url(#arrow)"/>
+
+  <!-- PASS 1 -->
+  <rect x="60" y="176" width="840" height="118" rx="10" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="80" y="200" class="phase-label" fill="#1d4ed8">PASS 1 &#8212; PLAN (one full read)</text>
+  <rect x="90" y="212" width="360" height="66" rx="8" fill="#dbeafe"/>
+  <text x="270" y="236" text-anchor="middle" class="box-title" fill="#1e3a8a">Walk file in chunks</text>
+  <text x="270" y="256" text-anchor="middle" class="box-text" fill="#1e3a8a">build occupancy grid + true bounds</text>
+  <path d="M450,245 L512,245" class="flow" marker-end="url(#arrow)"/>
+  <rect x="514" y="212" width="356" height="66" rx="8" fill="#dbeafe"/>
+  <text x="692" y="234" text-anchor="middle" class="box-title" fill="#1e3a8a">Adaptive octree over occupancy</text>
+  <text x="692" y="252" text-anchor="middle" class="box-text" fill="#1e3a8a">&#8594; tiles (leaves) with [lo, hi] extents</text>
+  <text x="692" y="269" text-anchor="middle" class="box-text" fill="#1e3a8a">+ guard-band margin</text>
+  <path d="M480,294 L480,322" class="flow" marker-end="url(#arrow)"/>
+
+  <!-- MAPS -->
+  <rect x="60" y="326" width="840" height="132" rx="10" fill="#fffbeb" stroke="#d97706" stroke-width="1.5"/>
+  <text x="80" y="350" class="phase-label" fill="#b45309">BUILD ROUTING MAPS (in memory, small)</text>
+  <rect x="90" y="362" width="360" height="80" rx="8" fill="#fef3c7"/>
+  <text x="270" y="384" text-anchor="middle" class="box-title" fill="#78350f">cell &#8594; owning-core map</text>
+  <text x="270" y="404" text-anchor="middle" class="box-text" fill="#78350f" font-weight="700">store-once: each point &#8594; exactly ONE core</text>
+  <text x="270" y="421" text-anchor="middle" class="box-text" fill="#78350f">(lowest tile index wins &#8212; deterministic)</text>
+  <rect x="514" y="362" width="356" height="80" rx="8" fill="#fef3c7"/>
+  <text x="692" y="384" text-anchor="middle" class="box-title" fill="#78350f">neighbor map</text>
+  <text x="692" y="404" text-anchor="middle" class="box-text" fill="#78350f">for each tile: which cores overlap its</text>
+  <text x="692" y="421" text-anchor="middle" class="box-text" fill="#78350f">expanded box [lo &#8722; margin, hi + margin]</text>
+  <path d="M480,458 L480,486" class="flow" marker-end="url(#arrow)"/>
+
+  <!-- PASS 2 -->
+  <rect x="60" y="490" width="840" height="150" rx="10" fill="#eff6ff" stroke="#3b82f6" stroke-width="1.5"/>
+  <text x="80" y="514" class="phase-label" fill="#1d4ed8">PASS 2 &#8212; ROUTE (one full read)</text>
+  <rect x="90" y="526" width="300" height="94" rx="8" fill="#dbeafe"/>
+  <text x="240" y="556" text-anchor="middle" class="box-title" fill="#1e3a8a">Walk file once more</text>
+  <text x="240" y="576" text-anchor="middle" class="box-text" fill="#1e3a8a">look up each point's cell</text>
+  <text x="240" y="593" text-anchor="middle" class="box-text" fill="#1e3a8a">&#8594; owning core (O(1), vectorized)</text>
+  <text x="240" y="610" text-anchor="middle" class="box-text" fill="#1e3a8a">append to that core's extract</text>
+  <path d="M390,573 L452,573" class="flow" marker-end="url(#arrow)"/>
+  <rect x="454" y="526" width="416" height="94" rx="8" fill="#fce7f3" stroke="#db2777" stroke-width="1.2"/>
+  <text x="662" y="558" text-anchor="middle" class="box-title" fill="#831843">Per-core extracts on disk</text>
+  <text x="662" y="580" text-anchor="middle" class="box-text" fill="#831843">total &#8776; raw point bytes</text>
+  <text x="662" y="598" text-anchor="middle" class="box-text" fill="#831843" font-weight="700">no guard-band duplication</text>
+  <path d="M480,640 L480,668" class="flow" marker-end="url(#arrow)"/>
+
+  <!-- RECON -->
+  <rect x="60" y="672" width="840" height="220" rx="10" fill="#ecfdf5" stroke="#059669" stroke-width="1.5"/>
+  <text x="80" y="696" class="phase-label" fill="#047857">PER-TILE: RECONSTRUCT + INFER  (peak memory = ONE tile)</text>
+  <rect x="250" y="708" width="460" height="40" rx="8" fill="#d1fae5"/>
+  <text x="480" y="733" text-anchor="middle" class="box-text" fill="#064e3b">Read tile's OWN core extract + its neighbor cores' extracts</text>
+  <path d="M480,748 L480,764" class="flow" marker-end="url(#arrow)"/>
+  <rect x="250" y="766" width="460" height="40" rx="8" fill="#d1fae5"/>
+  <text x="480" y="785" text-anchor="middle" class="box-text" fill="#064e3b">Filter to expanded box [lo &#8722; margin, hi + margin]</text>
+  <text x="480" y="800" text-anchor="middle" class="box-text" fill="#064e3b">rebuilds the guard band without ever storing duplicates</text>
+  <path d="M480,806 L480,822" class="flow" marker-end="url(#arrow)"/>
+  <rect x="250" y="824" width="225" height="52" rx="8" fill="#d1fae5"/>
+  <text x="362" y="847" text-anchor="middle" class="box-text" fill="#064e3b">Preprocess: transform to</text>
+  <text x="362" y="864" text-anchor="middle" class="box-text" fill="#064e3b">Z-up, downsample, select channels</text>
+  <path d="M475,850 L487,850" class="flow" marker-end="url(#arrow)"/>
+  <rect x="489" y="824" width="221" height="52" rx="8" fill="#d1fae5"/>
+  <text x="599" y="847" text-anchor="middle" class="box-text" fill="#064e3b">GPU inference</text>
+  <text x="599" y="864" text-anchor="middle" class="box-text" fill="#064e3b">(detection + segmentation)</text>
+  <path d="M480,892 L480,920" class="flow" marker-end="url(#arrow)"/>
+
+  <!-- Output -->
+  <rect x="300" y="924" width="360" height="52" rx="8" fill="#334155"/>
+  <text x="480" y="948" text-anchor="middle" class="box-title" fill="#fff">Merge detections across tiles</text>
+  <text x="480" y="966" text-anchor="middle" class="box-text" fill="#cbd5e1">&#8594; results JSON + LOD tiles for the viewer</text>
+
+  <!-- Why it wins -->
+  <rect x="60" y="1004" width="840" height="150" rx="10" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <text x="80" y="1030" class="phase-label" fill="#334155">WHY STORE-ONCE</text>
+  <text x="80" y="1058" class="box-text" fill="#334155">Re-read per batch &#8212; read the file (1 + n_batches) times. I/O scales with tile count; the 50 GB wall.</text>
+  <text x="80" y="1084" class="box-text" fill="#334155">Duplicate extracts &#8212; store each tile's guard band on disk. Simple, but blows past disk on big scenes.</text>
+  <text x="80" y="1110" class="box-text" fill="#065f46" font-weight="700">Store-once + reconstruct &#8212; two reads total, disk &#8776; raw points, peak RAM = one tile. Scales to 500 GB.</text>
+  <text x="80" y="1136" class="box-text" fill="#334155">Byte-identical tile membership to the earlier batched path &#8212; only the destination (disk vs RAM) changed.</text>
+</svg>

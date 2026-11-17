@@ -1,0 +1,48 @@
+# Dependency update PRs for every ecosystem this repository pins.
+#
+# Public AWS sample repositories are expected to stay clear of open Dependabot
+# security alerts, so updates are grouped per ecosystem to keep the PR count
+# reviewable rather than one PR per package.
+version: 2
+updates:
+  - package-ecosystem: uv
+    directories:
+      - /
+      - /tools/local-aws
+    schedule:
+      interval: weekly
+    groups:
+      python:
+        patterns: ["*"]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+    groups:
+      frontend:
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: terraform
+    directory: /infrastructure
+    schedule:
+      interval: weekly
+
+  - package-ecosystem: docker
+    directories:
+      - /
+      - /frontend
+      - /tools/local-aws
+    schedule:
+      interval: weekly
+
+  # docker-compose.yml pins its images by digest.
+  - package-ecosystem: docker-compose
+    directory: /
+    schedule:
+      interval: weekly

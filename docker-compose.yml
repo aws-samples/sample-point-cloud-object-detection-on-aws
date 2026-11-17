@@ -1,0 +1,121 @@
+version: "3.8"
+
+# Every service runs with no-new-privileges, so no setuid binary in an image can raise
+# a process's privileges, and every service built here has a read-only root filesystem
+# with a tmpfs /tmp, as on EKS. The worker's /tmp is bounded, and its downloads,
+# pipeline output and extracts go to a disk-backed volume at /scratch instead: a
+# multi-GB scene in a RAM-backed /tmp would use the host's memory. Every published port
+# binds to loopback only: this stack is a single-developer environment with dummy
+# credentials and no authentication, and must not be reachable from other machines on
+# the network.
+
+services:
+  # Local S3 + SQS: moto, built from tools/local-aws with its dependencies locked
+  # there, which also creates the stack's buckets and queues on start. State is in
+  # memory, so the root filesystem is read-only like every other service's.
+  aws-local:
+    build:
+      context: tools/local-aws
+    ports:
+      - "127.0.0.1:4566:4566"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+
+  # Backend API
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      # Loopback only: the API has no authentication of its own (on EKS the ALB or
+      # Kubernetes RBAC is the gate), so it must not be reachable from other machines
+      # on the network.
+      - "127.0.0.1:8000:8000"
+    environment:
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_ENDPOINT_URL=http://aws-local:4566
+      - S3_INPUT_BUCKET=pointcloud-detection-dev-input
+      - S3_OUTPUT_BUCKET=pointcloud-detection-dev-output
+      - S3_TILES_BUCKET=pointcloud-detection-dev-tiles
+      - S3_MODELS_BUCKET=pointcloud-detection-dev-models
+      - SQS_QUEUE_URL=http://aws-local:4566/000000000000/pointcloud-detection-dev-jobs
+      # Every caller reaches every job. per-user needs the ALB that signs users in on
+      # EKS, which this stack does not have (threat model T31).
+      - ACCESS_SCOPE=shared
+      # Pretrained checkpoints are non-commercially licensed and off unless you opt in:
+      #   ALLOW_NONCOMMERCIAL_WEIGHTS=1 docker compose up
+      - ALLOW_NONCOMMERCIAL_WEIGHTS=${ALLOW_NONCOMMERCIAL_WEIGHTS:-0}
+      - LOG_LEVEL=DEBUG
+      - LOG_FORMAT=json
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - aws-local
+    # The venv's own entry point, as in the image, rather than `uv run`.
+    command: ["/app/.venv/bin/uvicorn", "pointcloud_detect.api.app:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - "./src:/app/src"  # Hot reload during dev
+
+  # Backend Worker
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    environment:
+      - AWS_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - AWS_ENDPOINT_URL=http://aws-local:4566
+      - S3_INPUT_BUCKET=pointcloud-detection-dev-input
+      - S3_OUTPUT_BUCKET=pointcloud-detection-dev-output
+      - S3_TILES_BUCKET=pointcloud-detection-dev-tiles
+      - S3_MODELS_BUCKET=pointcloud-detection-dev-models
+      - SQS_QUEUE_URL=http://aws-local:4566/000000000000/pointcloud-detection-dev-jobs
+      - API_BASE_URL=http://api:8000
+      # Must match the api's: it refuses jobs the worker could not run.
+      - ALLOW_NONCOMMERCIAL_WEIGHTS=${ALLOW_NONCOMMERCIAL_WEIGHTS:-0}
+      - LOG_LEVEL=DEBUG
+      - LOG_FORMAT=json
+      # As in the Helm chart: tempfile honours TMPDIR for the input download and the
+      # pipeline's output, and the streaming path writes its extracts here.
+      - TMPDIR=/scratch
+      - PCD_EXTRACT_DIR=/scratch
+    read_only: true
+    tmpfs:
+      - /tmp:size=512m
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - aws-local
+      - api
+    command: ["/app/.venv/bin/python", "-m", "pointcloud_detect.worker.consumer"]
+    volumes:
+      - "./src:/app/src"
+      - "pcd-scratch:/scratch"
+
+  # Frontend (dev mode — proxies API calls to backend)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "127.0.0.1:3000:8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    depends_on:
+      - api
+
+volumes:
+  # The worker's scratch space. Remove it with `docker compose down -v`.
+  pcd-scratch:

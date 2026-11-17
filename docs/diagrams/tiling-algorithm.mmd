@@ -1,0 +1,21 @@
+flowchart TD
+    A["Input scene<br/>(up to 50 GB+)"] --> B{"Whole-cloud footprint<br/>&gt; memory budget?"}
+    B -- "no (small/medium,<br/>or PLY/.bin)" --> C["Load whole cloud"]
+    B -- "yes (streamable<br/>LAS/LAZ/E57)" --> D["Two-pass streaming:<br/>plan tiles from header,<br/>read one tile at a time"]
+    C --> E["adaptive_tile:<br/>density-aware octree"]
+    D --> E
+    E --> F{"node &gt; max_points<br/>per tile?"}
+    F -- no --> G["Emit tile<br/>(+ guard band)"]
+    F -- yes --> H{"any axis<br/>&ge; 2 x min_tile_size?"}
+    H -- no --> I["Emit tile at size floor<br/>(over budget, warns)"]
+    H -- "yes" --> J["Split each qualifying axis<br/>at point-count median<br/>(2 / 4 / 8 children)"]
+    J --> F
+    G --> K["Per-tile inference<br/>(detection / segmentation)"]
+    I --> K
+    K --> L["Reconcile across boundaries:<br/>3D NMS for boxes,<br/>confidence vote for labels"]
+    L --> M["Scene-level results"]
+
+    style E fill:#1e3a5f,color:#fff
+    style J fill:#1e3a5f,color:#fff
+    style L fill:#1e3a5f,color:#fff
+    style I fill:#4a3c1e,color:#fff

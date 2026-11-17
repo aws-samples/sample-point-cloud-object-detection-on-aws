@@ -1,0 +1,148 @@
+# The reviewed scanner findings, as rules CI enforces.
+#
+# Three lines carry an inline nosemgrep for a rule whose finding was reviewed and kept
+# (docs/security/THREAT_MODEL.md, 4.4): the parser sidecar's Popen, its refusal record,
+# and the tests' one process helper. Each comment states why the line is safe. These
+# rules make those reasons checkable: they fail the build if a reviewed line changes
+# shape, or if a line like it appears anywhere else, so a suppression holds only while
+# its reason does. tests/test_invariant_rules.py runs them on the tree (no findings)
+# and on one mutation of each reviewed line (each caught).
+#
+#   python -m semgrep scan --metrics=off --error --config .semgrep/invariants.yaml \
+#     $(git ls-files 'src/*.py' 'tests/*.py' 'scripts/*.py')
+#
+# Pass files, not directories: Semgrep's default ignore list skips tests/.
+
+rules:
+  # Every process start, except the two reviewed sites in their exact reviewed shape.
+  - id: pcd.process-start-outside-reviewed-sites
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory:
+        - audit
+      confidence: HIGH
+      likelihood: LOW
+      impact: HIGH
+      technology:
+        - python
+    message: >-
+      A process start that is not one of the two reviewed sites, or a reviewed site
+      whose shape changed. Review it, then update this rule, the suppression comment
+      and docs/security/THREAT_MODEL.md 4.4 together.
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern: subprocess.$F(...)
+              - metavariable-regex:
+                  metavariable: $F
+                  regex: ^(Popen|run|call|check_call|check_output|getoutput|getstatusoutput)$
+          - patterns:
+              - pattern: os.$F(...)
+              - metavariable-regex:
+                  metavariable: $F
+                  regex: ^(system|popen|exec[lv]p?e?|spawn[lv]p?e?|posix_spawnp?|fork|forkpty)$
+          - pattern: asyncio.create_subprocess_exec(...)
+          - pattern: asyncio.create_subprocess_shell(...)
+          - pattern: pty.spawn(...)
+      # The parser isolation (T11): this interpreter and module, the allowlisted
+      # environment, a session of its own.
+      - pattern-not:
+          patterns:
+            - pattern: >-
+                subprocess.Popen(_child_command($JOB), env=_child_env($HOME),
+                stdin=subprocess.DEVNULL, stdout=2, start_new_session=True)
+            - pattern-inside: |
+                def _run_child($JOB, $TIMEOUT, $HOME):
+                    ...
+      # The tests' helper: one of three named programs, the environment its caller
+      # passed and nothing else.
+      - pattern-not:
+          patterns:
+            - pattern: >-
+                subprocess.Popen($ARGV, env=dict($ENV), stdin=$IN, stdout=$OUT,
+                stderr=$ERR, text=True)
+            - pattern-inside: |
+                def start($PROGRAM, $ARGS, *, env, stdin=subprocess.DEVNULL, stdout=None, stderr=None):
+                    ...
+            - pattern-inside: |
+                $ARGV = [_executable($PROGRAM), *(str($A) for $A in $ARGS)]
+                ...
+
+  # A logging call that mentions a credential, outside the reviewed refusal record,
+  # which interpolates only the names credential_problems() found. The word may be in
+  # the message or the arguments, and every formatting shape counts: %s, %(name)s, an
+  # f-string, str.format, %, +, extra=, logger.log and the logging module's functions.
+  # A message built in a variable elsewhere is out of its reach.
+  - id: pcd.credential-word-log-outside-reviewed-site
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory:
+        - audit
+      confidence: HIGH
+      likelihood: LOW
+      impact: HIGH
+      technology:
+        - python
+    message: >-
+      A logging call that mentions a credential, outside the reviewed refusal record, or
+      that record no longer logging only the names found.
+    patterns:
+      # Any receiver: the metavariable-regex below narrows it to loggers.
+      # nosemgrep: slow-pattern-single-metavariable, slow-pattern-general-property
+      - pattern: $LOGGER.$CALL($...ARGS)
+      - metavariable-regex:
+          metavariable: $LOGGER
+          regex: (?i)^(logging|_?log|_?logger|self\._?log(ger)?|.*[._]log(ger)?)$
+      - metavariable-regex:
+          metavariable: $CALL
+          regex: ^(debug|info|warn|warning|error|exception|critical|fatal|log)$
+      - metavariable-regex:
+          metavariable: $...ARGS
+          regex: (?is).*(api.?key|secret|credential|token|passw(or)?d|private.?key|access.?key).*
+      - pattern-not:
+          patterns:
+            - pattern: logger.error($MSG, ", ".join($PROBLEMS))
+            - pattern-inside: |
+                def main(...):
+                    ...
+                    $PROBLEMS = credential_problems(os.environ)
+                    ...
+
+  # Nothing read from a job's files reaches the parser child's command line: the job
+  # directory comes from the sidecar's own spool scan, never from a request.
+  - id: pcd.job-data-reaches-child-argv
+    languages: [python]
+    severity: ERROR
+    metadata:
+      category: security
+      subcategory:
+        - audit
+      confidence: HIGH
+      likelihood: LOW
+      impact: HIGH
+      technology:
+        - python
+    message: Data read from a job file can reach the parser child's command line.
+    mode: taint
+    pattern-sources:
+      - pattern: read_json_file(...)
+      - pattern: json.load(...)
+      - pattern: json.loads(...)
+      - pattern: open(...)
+      # Any object: every read of a job file is a source.
+      - pattern: $P.read_text(...)  # nosemgrep: slow-pattern-single-metavariable
+      - pattern: $P.read_bytes(...)  # nosemgrep: slow-pattern-single-metavariable
+    pattern-sinks:
+      - patterns:
+          - pattern: subprocess.$F($ARGV, ...)
+          - focus-metavariable: $ARGV
+      - patterns:
+          - pattern: _child_command($JOB)
+          - focus-metavariable: $JOB
+      - patterns:
+          - pattern: _run_child($JOB, ...)
+          - focus-metavariable: $JOB

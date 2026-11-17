@@ -1,0 +1,77 @@
+{{- if and .Values.keda.enabled .Values.hpa.enabled }}
+{{- fail "keda.enabled and hpa.enabled are mutually exclusive: both create a HorizontalPodAutoscaler for the worker Deployment and the two controllers would fight over its replica count. Pick one." }}
+{{- end }}
+{{- if .Values.keda.enabled }}
+{{- if not .Values.aws.sqs.queueUrl }}
+{{- fail "keda.enabled requires aws.sqs.queueUrl. Without it the ScaledObject renders with an empty queueURL and the scaler fails at runtime instead of at install time." }}
+{{- end }}
+---
+# Authenticates the SQS scaler using the KEDA operator's own IRSA role.
+#
+# identityOwner defaults to "keda", meaning the operator's service account
+# credentials are used rather than the scaled workload's. That is deliberate: the
+# worker's role is scoped to Receive/Delete on the queue, while reading queue
+# DEPTH is a control-plane concern that belongs to the autoscaler. Keeping them
+# separate means the scaler cannot consume messages and the worker cannot inspect
+# the backlog.
+apiVersion: keda.sh/v1alpha1
+kind: TriggerAuthentication
+metadata:
+  name: worker-sqs-auth
+  namespace: {{ .Values.namespace }}
+spec:
+  podIdentity:
+    provider: aws
+---
+apiVersion: keda.sh/v1alpha1
+kind: ScaledObject
+metadata:
+  name: worker
+  namespace: {{ .Values.namespace }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: worker
+  # 0 is the point of using KEDA over a plain HPA. A GPU worker pod holds a whole
+  # GPU, so an idle replica pins a GPU node up and Cluster Autoscaler can never
+  # reclaim it.
+  minReplicaCount: {{ .Values.keda.minReplicaCount }}
+  maxReplicaCount: {{ .Values.keda.maxReplicaCount }}
+  pollingInterval: {{ .Values.keda.pollingInterval }}
+  # Must exceed GPU node cold start, otherwise a burst that arrives just after a
+  # scale-down pays the full node provisioning cost again.
+  cooldownPeriod: {{ .Values.keda.cooldownPeriod }}
+  advanced:
+    horizontalPodAutoscalerConfig:
+      behavior:
+        scaleUp:
+          stabilizationWindowSeconds: 30
+          policies:
+            - type: Pods
+              value: {{ .Values.keda.scaleUpPodsPerMinute }}
+              periodSeconds: 60
+        scaleDown:
+          stabilizationWindowSeconds: 300
+          policies:
+            - type: Pods
+              value: 1
+              periodSeconds: 60
+  triggers:
+    - type: aws-sqs-queue
+      authenticationRef:
+        name: worker-sqs-auth
+      metadata:
+        queueURL: {{ .Values.aws.sqs.queueUrl | quote }}
+        awsRegion: {{ .Values.aws.region | quote }}
+        # Target backlog PER REPLICA, not in total. Each job occupies a whole GPU,
+        # so this stays shallow.
+        queueLength: {{ .Values.keda.queueLength | quote }}
+        # LOAD-BEARING. Counts ApproximateNumberOfMessagesNotVisible (in-flight)
+        # alongside visible messages. A detection job runs for minutes with its
+        # message in flight and the visible count back at 0; with this false, KEDA
+        # would see an empty queue and scale the last worker away mid-job. The
+        # message would return to the queue on visibility timeout and the work
+        # would be redone from scratch.
+        scaleOnInFlight: "true"
+{{- end }}

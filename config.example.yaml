@@ -1,0 +1,62 @@
+pipeline:
+  name: "pointcloud-detection"
+  version: "1.0"
+
+preprocessing:
+  downsample: true
+  voxel_size_m: 0.02
+  use_color: true
+  use_intensity: false
+  use_normals: false
+  point_cloud_range: null
+  coord_frame: "z-up"                     # z-up, y-up, colmap, ros, livox, leica, or z-rot±N
+  max_points: null                        # max points to load (null = auto-cap at 20M for files >100M pts)
+
+model:
+  mode: "indoor"                          # indoor | outdoor | kitti | custom
+  detection:
+    backend: "mmdetection3d"
+    config: "fcaf3d_scannet"               # indoor: fcaf3d_scannet | outdoor: centerpoint_nuscenes | kitti: pointpillars_kitti
+    # "pretrained" (non-commercially licensed: needs ALLOW_NONCOMMERCIAL_WEIGHTS=1, see
+    # README "Pretrained weights and licensing") or a path to your own .pth file.
+    weights: "pretrained"
+  segmentation:
+    enabled: false                         # only pretrained weights exist; opt-in as above
+    backend: "mmdetection3d"
+    config: "pointnet2_s3dis"              # pointnet2_scannet (20-class) | pointnet2_s3dis (13-class structural)
+    weights: "pretrained"
+
+tiling:
+  max_points_per_tile: 100000
+  overlap_margin_m: 2.0
+  min_tile_size_m: 5.0
+  density_grid_resolution_m: 10.0
+  memory_budget_gb: 16
+
+inference:
+  device: "auto"
+  batch_size: 1
+  precision: "fp32"
+
+postprocessing:
+  nms_iou_threshold: 0.3
+  confidence_threshold: 0.5
+  raw_mode: false
+  min_size_m: null                        # minimum detection size in metres (max bbox dim), null = no limit
+  max_size_m: null                        # maximum detection size in metres (max bbox dim), null = no limit
+  excluded_labels: []                     # labels to exclude from output, e.g. ["curtain", "other furniture"]
+                                          # this key was renamed; unknown keys under postprocessing are now
+                                          # rejected with an error naming them, rather than silently ignored
+
+output:
+  directory: "./output"
+  naming: "{input_stem}_detections"
+  include_segmentation: true
+  include_aabb: true
+  normalize_coordinates: false
+  format: "json"
+
+logging:
+  level: "INFO"
+  format: "json"
+  progress: true

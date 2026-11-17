@@ -31,13 +31,30 @@ To send us a pull request, please:
 
 1. Fork the repository.
 2. Modify the source; please focus on the specific change you are contributing. If you also reformat all the code, it will be hard for us to focus on your change.
-3. Ensure local tests pass.
+3. Ensure local tests pass (see "Running the checks locally" below).
 4. Commit to your fork using clear commit messages.
 5. Send us a pull request, answering any default questions in the pull request interface.
 6. Pay attention to any automated CI failures reported in the pull request, and stay involved in the conversation.
 
 GitHub provides additional document on [forking a repository](https://help.github.com/articles/fork-a-repo/) and
 [creating a pull request](https://help.github.com/articles/creating-a-pull-request/).
+
+### Running the checks locally
+
+These are the same checks CI runs (`.github/workflows/ci.yml`):
+
+```bash
+uv sync --locked --extra dev --extra api --extra io --extra viz
+uv run ruff check .
+uv run ruff format --check .
+uv run pyright
+uv run pytest tests/ -rs
+
+(cd frontend && npm ci && npm run lint && npm run build && npm test)
+
+(cd infrastructure && terraform fmt -check -recursive \
+  && terraform init -backend=false && terraform validate)
+```
 
 
 ## Finding contributions to work on
