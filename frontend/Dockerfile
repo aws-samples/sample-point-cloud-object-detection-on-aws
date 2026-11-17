@@ -8,7 +8,7 @@
 #
 # checkov:skip=CKV_DOCKER_2: No HEALTHCHECK. Kubernetes ignores it; the Helm chart's
 # liveness and readiness probes do this job.
-FROM public.ecr.aws/docker/library/node:22-alpine@sha256:fe4f6d74e20370acb04ad889077d14d0f64a9c8ea6a42bc60cddf1e844699914 AS builder
+FROM public.ecr.aws/docker/library/node:26-alpine@sha256:6bd9ab43c0ec0190ca7b2d193906cb8b7edf6e7f4afa43ddeccd6452710bffb5 AS builder
 
 WORKDIR /app
 # The lockfile is required, not optional: npm ci refuses to run without it.
