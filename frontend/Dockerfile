@@ -27,7 +27,7 @@ RUN npm run build
 # Production: serve with nginx. The unprivileged variant runs as uid 101 and keeps
 # its pid and temp files under /tmp, so the container needs no root, no capabilities
 # and no writable root filesystem. It cannot bind port 80 without root, hence 8080.
-FROM public.ecr.aws/nginx/nginx-unprivileged:alpine@sha256:03df07e5931f8374d440bd62243a5ce9b24719715ef6fc4c9c626a5f1dbef417
+FROM public.ecr.aws/nginx/nginx-unprivileged:alpine@sha256:f90ef283a8a580912aa56315c3ed8f54cf50c2e89ed7e6fbf4c53368b55d712f
 
 COPY --from=builder /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf
