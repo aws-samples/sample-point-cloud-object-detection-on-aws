@@ -1,0 +1,120 @@
+[project]
+name = "pointcloud-detect"
+version = "0.1.0"
+description = "3D point cloud object detection and segmentation pipeline"
+readme = "README.md"
+license = "MIT-0"
+requires-python = ">=3.11"
+# The ranges here are compatibility bounds. uv.lock pins every package, and every install
+# path uses it: the images and scripts/setup-ec2.sh with `uv sync --frozen`, CI and
+# CONTRIBUTING.md with `uv sync --locked`, which fails if the lock is out of date.
+dependencies = [
+    "typer>=0.12",
+    "pydantic>=2.0",
+    "numpy>=1.26",
+    "orjson>=3.9",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+io = [
+    "laspy[lazrs]>=2.5",
+    "pye57>=0.4",
+    "trimesh>=4.0",
+]
+ml = [
+    "torch>=2.2",
+    # training/trainer.py and training/mmdet3d_trainer.py load YAML run configs in
+    # their __main__ entry points without a guard, so this is a hard requirement of
+    # the training paths. cli.py's YAML config support keeps its own try/except with
+    # an actionable message, so a core-only install still degrades cleanly.
+    "pyyaml>=6.0",
+    # The mmdetection3d stack is not an extra: uv.lock cannot hold it (mmcv compiles
+    # against the installed torch). Install it at the exact versions Dockerfile.gpu and
+    # scripts/setup-ec2.sh use, as README.md "Optional: real ML inference" shows.
+]
+# scripts/visualize.py imports matplotlib at module scope with no guard, so running it
+# without this extra fails with a bare ModuleNotFoundError. Declared rather than
+# guarded because the script's whole purpose is to render a plot.
+viz = [
+    "matplotlib>=3.8",
+]
+dev = [
+    "pytest>=8.0",
+    "anyio>=4.0",
+    "ruff>=0.4",
+    "pyright>=1.1",
+    # httpx backs fastapi's TestClient; hypothesis backs tests/test_properties.py.
+    # Both belong here rather than in a [dependency-groups] section: groups are only
+    # understood by uv, so `pip install -e '.[dev]'` silently omitted them and then
+    # tests/test_api.py, tests/test_api_model_registry.py and tests/test_properties.py
+    # all failed at collection, aborting the whole run before a single test executed.
+    "httpx>=0.28.1",
+    "hypothesis>=6.163.0",
+]
+api = [
+    # 0.132 made JSON bodies need a JSON Content-Type (strict_content_type). The CSRF
+    # controls rely on it (api/routes/models.py), so older versions are not accepted.
+    "fastapi>=0.132",
+    "uvicorn[standard]>=0.27",
+    "boto3>=1.34",
+    # api/deps.py imports botocore.config directly at module scope. boto3 always
+    # brings it, so this is not a new install -- it is declaring what the code
+    # actually imports rather than relying on another package's transitive tree.
+    "botocore>=1.34",
+    "python-multipart>=0.0.9",
+    "pydantic-settings>=2.2",
+    # api/identity.py verifies the ALB's ES256-signed user claims in per-user mode
+    # (threat model T31); [crypto] brings cryptography, which does the ECDSA check.
+    "pyjwt[crypto]>=2.10.1",
+    # api/identity.py fetches the ALB's public keys with it. botocore already depends
+    # on it; declared because the code imports it directly.
+    "urllib3>=2.5.0",
+]
+
+[project.scripts]
+pointcloud-detect = "pointcloud_detect.cli:app"
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
+
+[tool.ruff.lint.per-file-ignores]
+# scripts/ holds standalone dataset-conversion and one-off inference utilities, not
+# library code. Their remaining long lines are content that wrapping makes worse:
+# generated HTML/JS, argparse help text, and example JSON payloads shown verbatim so
+# they can be copied. Everything else in the E/F/I/UP set is enforced here, and
+# src/ and tests/ carry no exemptions at all.
+"scripts/*" = ["E501"]
+
+[tool.pyright]
+# On the inline `# pyright: ignore[reportMissingImports]` comments in this repo:
+#
+# They mark imports of the mmdetection3d stack (mmdet3d, mmcv, mmengine), torch,
+# MinkowskiEngine and nuscenes-devkit. Every one of them already sits inside a
+# try/except ImportError with a runtime fallback or an actionable message, so the code
+# is correct; pyright flags them only because those modules are absent from the
+# analysis environment. mmdet3d and friends install via `mim`, not pip, so no amount
+# of extras makes them resolvable here. torch is pip-installable via the `ml` extra
+# but is deliberately not synced in CI, because the default Linux wheel pulls the
+# whole CUDA stack and would dominate pipeline time for a type check that cannot
+# exercise a GPU anyway.
+#
+# They are inline and per-import on purpose. reportMissingImports stays an error
+# globally, and a file-level `# pyright: reportMissingImports=false` was rejected: a
+# genuinely mistyped optional import would be swallowed by the surrounding
+# `except ImportError` at runtime and hidden by the suppression at check time, so the
+# typo could survive both gates. Narrowing the suppression to the exact lines keeps
+# every other import in those files checked.
+pythonVersion = "3.12"
+typeCheckingMode = "standard"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pointcloud_detect"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

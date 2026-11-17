@@ -1,0 +1,16 @@
+# Never copy host deps/build into the image — they'd clobber the in-image
+# npm ci install with wrong-arch native binaries (esbuild/rollup).
+node_modules
+dist
+dist-ssr
+
+# VCS / editor / OS
+.git
+.gitignore
+.vscode
+.DS_Store
+
+# Local dev tooling not needed in the image
+mock-server.mjs
+*.log
+.vite

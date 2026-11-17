@@ -1,0 +1,66 @@
+# Training recipe: commercially clean indoor detector (README, "Commercially clean model")
+#
+# Trains FCAF3D FROM SCRATCH (no pretrained checkpoint) on the CRAS-lab office
+# dataset, which is licensed CC BY 4.0:
+#   Abreu, N., Souza, R., Pinto, A., Matos, A., & Pires, M. (2023).
+#   Indoor point cloud dataset for BIM related applications. Zenodo.
+#   https://doi.org/10.5281/zenodo.7948116
+# The resulting weights inherit no non-commercial checkpoint terms. They carry the
+# dataset's attribution requirement; keep the citation above with them.
+#
+# FCAF3D needs MinkowskiEngine, which only the GPU image (Dockerfile.gpu) and the
+# README's MinkowskiEngine setup have. Without it, set base_model: "votenet_scannet"
+# to train VoteNet instead (point-based, no sparse convolution), and pass
+# --architecture votenet_scannet when detecting.
+#
+# Steps (run in your own AWS account; no weights are distributed with this repo):
+#   1. Download craslabannotated.zip from the Zenodo record into data/craslab/.
+#   2. python scripts/convert-zenodo-craslab.py \
+#        --input data/craslab/craslabannotated.zip \
+#        --out-dir data/craslab_scenes --downsample-voxel 0.03
+#   3. python -m pointcloud_detect.training.mmdet3d_trainer \
+#        --config configs/train_clean_indoor_craslab.yaml      (GPU required)
+#   4. pointcloud-detect detect scene.ply \
+#        --weights models/clean_indoor_craslab/model.pth \
+#        --architecture fcaf3d_scannet
+
+# base_model names the ARCHITECTURE (FCAF3D); "scannet" is only the name of the stock
+# mmdet3d config it starts from. base_weights: scratch means random initialization:
+# no checkpoint is fetched, so ALLOW_NONCOMMERCIAL_WEIGHTS can stay off.
+base_model: "fcaf3d_scannet"
+base_weights: "scratch"
+
+data_path: "./data/craslab_scenes"
+val_split: 0.2
+output_path: "./models/clean_indoor_craslab"
+
+# From scratch needs far more epochs than a fine-tune. FCAF3D's sparse 3D convolutions
+# are memory-hungry, hence the small batch (fits a 24 GB A10G).
+epochs: 80
+learning_rate: 0.001
+batch_size: 2
+num_workers: 4
+checkpoint_interval: 10
+early_stopping_patience: 30
+
+augmentation:
+  random_flip: true
+  random_rotate: true
+  random_scale: [0.9, 1.1]
+  random_jitter: 0.02
+
+# Office object classes from the converter's output (names match its CRASLAB_CLASSES).
+# Boxes of other classes are ignored. Drop classes with too few instances in your
+# converted scenes (the converter prints a per-class count).
+custom_classes:
+  - door
+  - window
+  - desk
+  - chair
+  - cabinet
+  - shelf
+  - bin
+  - board
+  - screen
+
+run_on_eks: false

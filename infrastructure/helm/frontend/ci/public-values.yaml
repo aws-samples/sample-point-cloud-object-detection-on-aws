@@ -1,0 +1,23 @@
+# CI-only values: a complete public-mode render with placeholder identifiers, used by
+# helm lint and the nginx syntax check in both CI configurations. Nothing is deployed.
+image:
+  repository: 111122223333.dkr.ecr.us-east-1.amazonaws.com/pointcloud-detection-frontend
+  tag: 0123abc
+accessMode: public
+portForward:
+  group: pointcloud-detection-app-clients
+ingress:
+  certificateArn: arn:aws:acm:us-east-1:111122223333:certificate/00000000-0000-0000-0000-000000000000
+  host: pcd.example.com
+  auth:
+    userPoolArn: arn:aws:cognito-idp:us-east-1:111122223333:userpool/us-east-1_EXAMPLE
+    userPoolClientId: exampleclientid
+    userPoolDomain: pointcloud-detection-dev-00000000
+networkPolicy:
+  albSourceCidrs:
+    - 10.0.101.0/24
+    - 10.0.102.0/24
+aws:
+  s3:
+    # A name reserved by AWS for examples, so no one can own a bucket by that name.
+    inputBucket: amzn-s3-demo-bucket

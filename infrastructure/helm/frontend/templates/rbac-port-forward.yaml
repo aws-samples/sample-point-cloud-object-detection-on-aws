@@ -1,0 +1,38 @@
+{{- if .Values.portForward.group }}
+# What an app client (terraform var.app_client_principal_arns, via an EKS access entry
+# in this group) may do: find the frontend and api pods and open a port-forward to
+# them. Nothing else. In particular no pods/exec, no Secrets, and no Ingress or Service
+# writes: either would let the holder take sign-in off an ALB rule (ingress.yaml).
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-port-forward
+  namespace: {{ .Values.namespace }}
+rules:
+  # `kubectl port-forward svc/<name>` reads the Service, then lists its pods.
+  - apiGroups: [""]
+    resources: ["services"]
+    verbs: ["get"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list"]
+  # create for the SPDY transport (POST), get for the WebSocket one (an upgraded GET)
+  # that newer kubectl versions try first.
+  - apiGroups: [""]
+    resources: ["pods/portforward"]
+    verbs: ["get", "create"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-port-forward
+  namespace: {{ .Values.namespace }}
+subjects:
+  - kind: Group
+    apiGroup: rbac.authorization.k8s.io
+    name: {{ .Values.portForward.group | quote }}
+roleRef:
+  kind: Role
+  apiGroup: rbac.authorization.k8s.io
+  name: app-port-forward
+{{- end }}

@@ -1,0 +1,64 @@
+{{- include "pcd.validateNetworkPolicy" . }}
+{{- if .Values.networkPolicy.enabled }}
+# Enforced only when the VPC CNI runs with enableNetworkPolicy (Terraform eks module).
+#
+# In port-forward mode nginx relays /api to the api pods, which authenticate nothing,
+# so whatever can reach this pod can reach every API route. The header and Host rules
+# in configmap-nginx.yaml stop browsers, not a client that sets both. Without this
+# policy that was any pod in any namespace. The tunnel itself is unaffected: kubectl
+# port-forward traffic enters the pod through the kubelet, is gated by RBAC
+# (rbac-port-forward.yaml), and is not subject to this policy (THREAT_MODEL.md A12).
+#
+# Kubelet probes need no rule: the VPC CNI's policy agent always admits the pod's own
+# node. Nothing in kube-system calls nginx, so kube-system is not admitted.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-frontend
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: frontend
+  policyTypes:
+    - Ingress
+    - Egress
+  {{- if eq .Values.accessMode "public" }}
+  ingress:
+    # The ALB, which with target-type ip connects to pod IPs directly.
+    - from:
+        {{- range .Values.networkPolicy.albSourceCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - port: {{ .Values.port }}
+  # nginx serves static files and calls nothing: the ALB sends /api to the api pods.
+  egress: []
+  {{- else }}
+  ingress: []
+  # nginx resolves the api Service per request through cluster DNS and proxies to it.
+  # The policy controller adds the Service's ClusterIP for a podSelector peer whose
+  # labels match the Service's selector (app: api), and maps this container port to
+  # the Service's port.
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+        - port: 53
+          protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api
+      ports:
+        - port: {{ .Values.portForward.apiPort }}
+  {{- end }}
+{{- end }}

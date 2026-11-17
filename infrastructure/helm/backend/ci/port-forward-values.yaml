@@ -1,0 +1,12 @@
+# CI-only values: port-forward mode needs no ALB source CIDRs.
+image:
+  repository: 111122223333.dkr.ecr.us-east-1.amazonaws.com/pointcloud-detection-backend
+  tag: 0123abc
+accessMode: port-forward
+jobStore:
+  tableName: pointcloud-detection-dev-jobs
+aws:
+  sqs:
+    queueUrl: https://sqs.us-east-1.amazonaws.com/111122223333/pointcloud-detection-dev-jobs
+networkPolicy:
+  vpcCidr: 10.0.0.0/16

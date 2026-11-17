@@ -1,0 +1,106 @@
+{{- include "pcd.validateNetworkPolicy" . }}
+{{- if .Values.networkPolicy.enabled }}
+# Enforced only when the VPC CNI runs with enableNetworkPolicy (Terraform eks module).
+# Before that was set these policies were accepted by the API server and enforced by
+# nothing.
+#
+# Kubelet probes need no rule: the VPC CNI's policy agent always admits traffic from
+# the pod's own node (aws-network-policy-agent, fw_rule_processor.go: "This ensures
+# kubelet liveness/readiness probes are never blocked").
+#
+# Namespace default-deny: a pod in this namespace that no policy below selects, such
+# as a hand-run debug pod or a new workload, gets no traffic in or out. Every
+# legitimate flow is allowed by a policy for its own pods: api and worker here,
+# frontend and training in their charts.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-ingress-to-api
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+    - Ingress
+    - Egress
+  # The API authenticates nothing itself, so every source admitted here reaches it
+  # unauthenticated. In public mode the intended caller is the ALB, which has already
+  # run the Cognito action; in port-forward mode, the frontend's nginx proxy, which is
+  # itself reachable from nothing but the tunnel (frontend networkpolicy.yaml). Nothing
+  # in kube-system calls the API, so it is no longer admitted (THREAT_MODEL.md M49).
+  ingress:
+    {{- if eq .Values.accessMode "public" }}
+    # The ALB, which with target-type ip connects to pod IPs directly.
+    - from:
+        {{- range .Values.networkPolicy.albSourceCidrs }}
+        - ipBlock:
+            cidr: {{ . }}
+        {{- end }}
+      ports:
+        - port: {{ .Values.api.port }}
+    {{- else }}
+    - from:
+        - podSelector:
+            matchLabels:
+              app: frontend
+      ports:
+        - port: {{ .Values.api.port }}
+    {{- end }}
+    {{- if eq .Values.jobStore.backend "memory" }}
+    # The in-memory store's only status channel is the worker's HTTP callback.
+    - from:
+        - podSelector:
+            matchLabels:
+              app: worker
+      ports:
+        - port: {{ .Values.api.port }}
+    {{- end }}
+  # S3 (presigned URLs are signed locally, but multipart create/complete are calls),
+  # SQS, DynamoDB and STS for IRSA: all outside the VPC.
+  egress:
+    {{- include "pcd.egressDnsAndHttps" . | nindent 4 }}
+---
+# The worker parses untrusted files with its IRSA credentials in reach, so it is the
+# pod most worth containing. It serves nothing, so no ingress at all. Egress is DNS
+# plus HTTPS to outside the VPC: enough for S3, SQS, DynamoDB, STS and, when
+# models.allowNoncommercialWeights opts in, the checkpoint host, but not the cluster API, other pods or node-local services. The parser
+# container shares the pod's network, and so this egress, until it gets a network of
+# its own (T20).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: worker-isolation
+  namespace: {{ .Values.namespace }}
+spec:
+  podSelector:
+    matchLabels:
+      app: worker
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    {{- include "pcd.egressDnsAndHttps" . | nindent 4 }}
+    {{- if eq .Values.jobStore.backend "memory" }}
+    # The in-memory store's status callback, through the api Service. The policy
+    # controller adds the Service's ClusterIP for a podSelector peer whose labels
+    # match the Service's selector, mapping this container port to the Service port.
+    - to:
+        - podSelector:
+            matchLabels:
+              app: api
+      ports:
+        - port: {{ .Values.api.port }}
+    {{- end }}
+{{- end }}

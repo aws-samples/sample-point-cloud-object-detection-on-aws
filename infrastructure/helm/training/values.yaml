@@ -1,0 +1,84 @@
+image:
+  repository: ""  # Set to ECR URL
+  # Required, and never latest: the immutable tag build-push.sh pushed (the git
+  # SHA), which deploy.sh passes. Rendering fails without it.
+  tag: ""
+  # A tag names one build, so a node that already has it need not pull again.
+  pullPolicy: IfNotPresent
+
+namespace: pointcloud-detection
+
+serviceAccount:
+  name: training-sa
+  annotations: {}
+
+job:
+  backoffLimit: 2
+  ttlSecondsAfterFinished: 86400  # Cleanup after 24h
+  resources:
+    requests:
+      cpu: 4000m
+      memory: 16Gi
+      nvidia.com/gpu: "1"
+    limits:
+      cpu: 8000m
+      memory: 32Gi
+      nvidia.com/gpu: "1"
+  nodeSelector:
+    workload-type: gpu
+  tolerations:
+    - key: nvidia.com/gpu
+      operator: Exists
+      effect: NoSchedule
+  # The container's only writable paths; the root filesystem is read-only.
+  # /tmp: HOME, temp files and the caches, including the pretrained checkpoint.
+  tmp:
+    sizeLimit: 10Gi
+  # /app/training_output: checkpoints, logs and the converted dataset. Not uploaded
+  # anywhere: it lasts as long as the pod, as the writable layer it replaces did.
+  workDir:
+    sizeLimit: 50Gi
+
+training:
+  configPath: ""       # S3 path to training config YAML
+  dataPath: ""         # S3 path to annotated data
+  outputPath: ""       # S3 path for checkpoints
+  baseModel: "fcaf3d_scannet"
+  epochs: 50
+  batchSize: 8
+  learningRate: 0.001
+  # The pretrained checkpoints were all trained on non-commercially licensed data, so
+  # the trainer may not fetch them unless this is true (ALLOW_NONCOMMERCIAL_WEIGHTS).
+  # Off, train from scratch (base_weights: scratch) or from weights of your own.
+  allowNoncommercialWeights: false
+
+# Pod-security baseline, matching the backend chart and the "restricted" Pod Security
+# Standard. The training image (Dockerfile.gpu) already runs as uid 999, so runAsNonRoot
+# is enforceable. The root filesystem is read-only: mmdet3d and PyTorch write their
+# caches under HOME and /tmp, which job.yaml points at emptyDirs.
+securityContext:
+  pod:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+  container:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+
+# NetworkPolicy for the training pods (networkpolicy.yaml): no ingress, and egress to
+# cluster DNS and HTTPS outside the VPC only, as for the worker. Enforced only when the
+# VPC CNI runs with enableNetworkPolicy (Terraform eks module).
+networkPolicy:
+  enabled: true
+  # The VPC CIDR (terraform output vpc_cidr). Required: HTTPS egress is allowed to
+  # anywhere except this range, so the trainer reaches S3, STS and the checkpoint host
+  # but not the cluster API, other pods, or node services.
+  vpcCidr: ""
+  # enabled=false is refused unless this is set too; see the backend chart's
+  # networkPolicy.acknowledgeUnprotectedApi.
+  acknowledgeUnprotectedApi: false

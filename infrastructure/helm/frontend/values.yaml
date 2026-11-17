@@ -1,0 +1,131 @@
+image:
+  repository: ""  # Set to ECR URL
+  # Required, and never latest: the immutable tag build-push.sh pushed (the git
+  # SHA), which deploy.sh passes. Rendering fails without it.
+  tag: ""
+  # A tag names one build, so a node that already has it need not pull again.
+  pullPolicy: IfNotPresent
+
+namespace: pointcloud-detection
+
+replicas: 2
+port: 8080
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+serviceAccount:
+  name: frontend-sa
+  annotations: {}
+
+# How users reach the UI and API. deploy.sh sets this from ACCESS_MODE.
+#
+#   public       Internet-facing ALB, HTTPS only, with the ALB's Cognito sign-in on
+#                every rule (ingress.yaml). Needs ingress.certificateArn, ingress.host
+#                and ingress.auth.*; rendering fails without them.
+#   port-forward No Ingress and no load balancer. Users run
+#                  kubectl -n pointcloud-detection port-forward svc/frontend 8080:80
+#                and nginx proxies /api to the api Service. The gate is the caller's
+#                IAM identity, its EKS access entry and the Role in
+#                rbac-port-forward.yaml.
+accessMode: public
+
+ingress:
+  className: alb
+  # One ALB serves both Ingresses (api and spa) through this IngressGroup. Changing it
+  # creates a new ALB with a new DNS name, and the old one is deleted.
+  groupName: pointcloud-detection
+  # ACM certificate for the HTTPS listener. HTTP only redirects to HTTPS, and the
+  # listener negotiates TLS 1.2 or 1.3 only. Required: the ALB authenticates only on
+  # HTTPS listeners.
+  certificateArn: ""
+  sslPolicy: ELBSecurityPolicy-TLS13-1-2-2021-06
+  # Hostname on the certificate, and the one registered as the Cognito callback.
+  # Required. Requests for any other Host, including the ALB's own DNS name, get the
+  # listener's default 404.
+  host: ""
+  # Comma-separated client CIDRs allowed to reach the ALB. Empty allows any.
+  inboundCidrs: ""
+  # Comma-separated ALB attributes added to the chart's own, e.g.
+  # access_logs.s3.enabled=true,access_logs.s3.bucket=<bucket>
+  extraLoadBalancerAttributes: ""
+  # Extra annotations for both Ingresses, e.g. tags or a WAF ACL. Keys that change the
+  # listeners, sign-in, routing, grouping, scheme or security groups are refused at
+  # render time, because overriding any of them can leave a rule unauthenticated. Custom
+  # security-groups would also make the controller ignore inboundCidrs.
+  annotations: {}
+  # The ALB's authenticate-cognito action. deploy.sh fills these from
+  # `terraform output -json cognito`.
+  auth:
+    userPoolArn: ""
+    userPoolClientId: ""
+    # The domain PREFIX only (my-prefix), not https://my-prefix.auth.<region>...
+    userPoolDomain: ""
+    scope: openid email
+    sessionCookie: AWSELBAuthSessionCookie
+    # Seconds. Long enough for a multi-hour upload. Keep the Cognito refresh token at
+    # least this long (Terraform auth_session_hours sets both).
+    sessionTimeout: 43200
+
+portForward:
+  # Kubernetes group allowed to port-forward to the frontend and api pods: the group
+  # EKS access entries map app_client_principal_arns to (terraform output
+  # app_client_group). Empty renders no Role. Used in both modes: port-forward is the
+  # only programmatic path to the API.
+  group: ""
+  # The backend's api Service, which nginx proxies /api to in port-forward mode.
+  apiService: api
+  # The api pods' container port (the backend chart's api.port), which the egress
+  # policy admits.
+  apiPort: 8000
+
+# NetworkPolicy for the frontend pods (networkpolicy.yaml). In port-forward mode nginx
+# relays /api to an API with no authentication of its own, so this is what keeps other
+# pods in the cluster from using it.
+networkPolicy:
+  enabled: true
+  # CIDRs the ALB connects to frontend pods from: the public subnets (terraform output
+  # public_subnet_cidrs), the list the backend chart takes too. Required in public
+  # mode. Port-forward mode admits no network source: the tunnel enters through the
+  # kubelet.
+  albSourceCidrs: []
+  # enabled=false is refused unless this is set too; see the backend chart's
+  # networkPolicy.acknowledgeUnprotectedApi.
+  acknowledgeUnprotectedApi: false
+
+# The input bucket the browser uploads parts to on presigned URLs, and its Region.
+# Required: the Content-Security-Policy's connect-src admits that bucket and nothing
+# else off-origin. deploy.sh passes both (terraform output input_bucket_name).
+aws:
+  region: us-east-1
+  s3:
+    inputBucket: ""
+
+# T35. nginx sends Content-Security-Policy on every response (_helpers.tpl pcd.csp).
+# reportOnly: true sends it as Content-Security-Policy-Report-Only instead, which the
+# browser checks and reports in the console but does not enforce: for trying a change
+# to the SPA that the policy might block.
+contentSecurityPolicy:
+  reportOnly: false
+
+# The image is nginx-unprivileged (uid 101), so the container runs with no root, no
+# capabilities and a read-only root filesystem; nginx's pid and temp files go to the
+# /tmp emptyDir mounted by the deployment.
+securityContext:
+  pod:
+    runAsNonRoot: true
+    runAsUser: 101
+    runAsGroup: 101
+    seccompProfile:
+      type: RuntimeDefault
+  container:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL

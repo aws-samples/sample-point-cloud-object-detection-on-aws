@@ -1,0 +1,26 @@
+# GPU override for the worker service. Layer on top of docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
+#
+# Changes ONLY the worker: builds the CUDA/mmdet3d image, grants the NVIDIA GPU,
+# and declares this worker GPU-capable so it accepts device_preference=gpu jobs.
+# API, frontend, and the local S3/SQS emulator are inherited unchanged from docker-compose.yml.
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.gpu
+    # Grant the container the host GPU via the nvidia runtime (present on this box).
+    gpus: all
+    environment:
+      # Mark this worker GPU-capable so the consumer's routing accepts gpu jobs.
+      - WORKER_DEVICE=gpu
+      # Persist the mmdet3d checkpoint cache across restarts so pretrained weights,
+      # when opted in with ALLOW_NONCOMMERCIAL_WEIGHTS=1, are downloaded once, not per
+      # job.
+      - TORCH_HOME=/models-cache
+    volumes:
+      # Model checkpoint cache (survives container restarts).
+      - "pcd-model-cache:/models-cache"
+
+volumes:
+  pcd-model-cache:

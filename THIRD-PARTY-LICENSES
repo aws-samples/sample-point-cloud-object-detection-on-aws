@@ -1,0 +1,312 @@
+# Third-Party Licenses
+
+This project **does not include** (vendor, bundle or copy) any third-party source
+code, datasets or model weights. Everything below is a *referenced* dependency: it is
+installed by the user's package manager or container build from its canonical source,
+under its own license, and is listed here so its licensing is visible before you
+install it.
+
+Versions are the ones pinned in `uv.lock` and `frontend/package-lock.json` at the time
+this file was generated. Regenerate it whenever either lock file changes (see
+"Regenerating this file" at the end).
+
+## Notes that need your attention
+
+* **NVIDIA CUDA libraries.** On Linux, `torch` (the `ml` extra, and the GPU image)
+  pulls NVIDIA's CUDA runtime wheels (`nvidia-*`, `cuda-*`). These are distributed by
+  NVIDIA under the NVIDIA Software License Agreement, not an open source license. The
+  GPU image is also built on the AWS Deep Learning Containers base image, which is
+  built on NVIDIA's CUDA image and carries the NVIDIA Deep Learning Container License
+  and the CUDA Toolkit EULA; it is used only to compile, and the image that ships is
+  Ubuntu 22.04 with the CUDA wheels above. Neither is redistributed by this
+  repository; you accept NVIDIA's terms when you pull them.
+* **Pre-trained model weights: off by default.** The MMDetection3D backend can
+  download checkpoints from the OpenMMLab model zoo (`download.openmmlab.com`). Those
+  checkpoints were trained on ScanNet, S3DIS, nuScenes and KITTI, whose terms restrict
+  them to non-commercial use (for example nuScenes and KITTI are published under
+  CC BY-NC-SA). So **none is downloaded unless you set `ALLOW_NONCOMMERCIAL_WEIGHTS=1`**
+  (`src/pointcloud_detect/backends/checkpoints.py`); do that only if your use is
+  permitted by those terms. No weights or dataset files are included in this
+  repository.
+* **Commercially clean model (CC BY 4.0 data).** The README's "Commercially clean
+  model" recipe trains a detector from scratch, in your account, on the CRAS-lab
+  indoor point cloud dataset: Abreu, N., Souza, R., Pinto, A., Matos, A., & Pires, M.
+  (2023), *Indoor point cloud dataset for BIM related applications*, Zenodo,
+  https://doi.org/10.5281/zenodo.7948116, licensed CC BY 4.0. The dataset is downloaded
+  by you, not by this repository; attribution is required for the data and for
+  weights and results derived from it.
+* **Native libraries inside wheels.** The `pye57` wheel statically links libE57Format
+  (Boost Software License 1.0) and Apache Xerces-C (Apache-2.0); `laspy`'s LAZ backend
+  `lazrs` is a Rust extension under MIT. Their licenses ship inside the installed wheels.
+* **Weak copyleft (MPL-2.0).** `certifi`, `orjson` (in part) and, for development only,
+  `hypothesis` are MPL-2.0. They are used unmodified as installed packages.
+* **What mmdet3d itself requires.** `mmdet3d` 1.4.0 declares two runtime requirements
+  that are not under a permissive license and that this sample does not use:
+  `lyft-dataset-sdk` 0.0.8 (CC BY-NC-SA 4.0, non-commercial; mmdet3d imports it only to
+  register its Lyft metric) and `plyfile` 1.1.5 (GPL-3.0-or-later; nothing imports it).
+  The GPU image and `scripts/setup-ec2.sh` install mmdet3d with them and then remove
+  both, with the packages only the SDK required (pandas, pytest, black, flake8):
+  `scripts/patch_mmdet3d_lyft.py` makes the Lyft metric optional first. The
+  manual install in the README does the same. `nuscenes-devkit` 1.1.9, which mmdet3d
+  also requires and uses, is Apache-2.0 by its license file, although its package
+  metadata names the nuScenes dataset's CC BY-NC-SA 4.0.
+
+## Container images and the GPU inference stack
+
+These are installed by `Dockerfile`, `Dockerfile.cpu`, `Dockerfile.gpu` and
+`frontend/Dockerfile`, not by `uv.lock`.
+
+| Component | Where | License |
+|---|---|---|
+| amazonlinux:2023-minimal (ECR Public, pinned by digest), with its python3.12 package | `Dockerfile` and `tools/local-aws/Dockerfile` base image | Amazon Linux 2023 packages under their own licenses (Python: PSF-2.0) |
+| moto, flask, flask-cors (locked in `tools/local-aws/uv.lock`) | local AWS emulator for `docker compose`, development only | Apache-2.0; BSD-3-Clause; MIT |
+| ghcr.io/astral-sh/uv 0.12.19 (pinned by digest) | `Dockerfile`, `Dockerfile.gpu` build stage | Apache-2.0 OR MIT |
+| AWS Deep Learning Containers `base:12.9.1-gpu-py312-cu129-ubuntu22.04-ec2` (ECR Public, pinned by digest; build stage only) | `Dockerfile.gpu` build stage | NVIDIA Deep Learning Container License and CUDA Toolkit EULA (it is built on NVIDIA's CUDA image); its Ubuntu packages under their own licenses |
+| ubuntu:22.04 (the ECR Public copy of the official image, pinned by digest) | `Dockerfile.gpu` runtime base | Ubuntu packages under their own licenses |
+| node:22-alpine (build stage), nginx-unprivileged:alpine (ECR Public mirrors, pinned by digest) | `frontend/Dockerfile` | MIT (Node.js), BSD-2-Clause (nginx); Alpine packages under their own licenses |
+| torch 2.13.0, torchvision 0.28.0 (CUDA 12.9 builds in the GPU image; CUDA 12.6 or 12.9 on a host) | `Dockerfile.gpu`, `scripts/setup-ec2.sh` | BSD-3-Clause |
+| mmengine 0.10.7, mmcv 2.1.0, mmdet 3.2.0, mmdet3d 1.4.0 | `Dockerfile.gpu`, `scripts/setup-ec2.sh` | Apache-2.0 |
+| nuscenes-devkit 1.1.9 (a requirement of mmdet3d 1.4.0; its others, lyft-dataset-sdk and plyfile, are removed, see the note above) | `Dockerfile.gpu`, `scripts/setup-ec2.sh` | Apache-2.0 |
+| MinkowskiEngine (commit `02fc608`) | `Dockerfile.gpu`, built from source | MIT |
+| setuptools 69.5.1, wheel 0.45.1 and ninja 1.13.2 (build only), setuptools 84.2.1, numpy 1.26.4, pip 26.2.1 (build only) | `Dockerfile.gpu` | MIT; MIT; Apache-2.0; MIT; BSD-3-Clause; MIT |
+| OpenMMLab pre-trained checkpoints | downloaded at runtime only with `ALLOW_NONCOMMERCIAL_WEIGHTS=1` | Apache-2.0 (code); non-commercial training-data terms apply, see above |
+
+## Python runtime dependencies
+
+Extras `api`, `io`, `viz` and `ml`, including transitive dependencies.
+
+| Package | Version | License | Project URL |
+|---|---|---|---|
+| annotated-doc | 0.0.4 | MIT | https://github.com/fastapi/annotated-doc |
+| annotated-types | 0.7.0 | MIT License | https://github.com/annotated-types/annotated-types |
+| anyio | 4.15.1 | MIT | https://anyio.readthedocs.io/en/stable/versionhistory.html |
+| boto3 | 1.43.54 | Apache-2.0 | https://github.com/boto/boto3 |
+| botocore | 1.43.54 | Apache-2.0 | https://github.com/boto/botocore |
+| cffi | 2.1.1 | MIT-0 | https://github.com/python-cffi/cffi |
+| click | 8.4.1 | BSD-3-Clause | https://github.com/pallets/click/ |
+| colorama | 0.4.6 | BSD-3-Clause |  |
+| contourpy | 1.3.3 | BSD License | https://github.com/contourpy/contourpy |
+| cryptography | 50.0.2 | Apache-2.0 OR BSD-3-Clause | https://github.com/pyca/cryptography |
+| cuda-bindings | 13.2.0 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| cuda-pathfinder | 1.5.4 | Apache-2.0 |  |
+| cuda-toolkit | 13.0.3.0 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| cycler | 0.12.1 | BSD License | https://matplotlib.org/cycler/ |
+| fastapi | 0.139.2 | MIT | https://github.com/fastapi/fastapi |
+| filelock | 4.2.4 | MIT |  |
+| fonttools | 4.64.0 | MIT | http://github.com/fonttools/fonttools |
+| fsspec | 2026.4.0 | BSD-3-Clause |  |
+| h11 | 0.16.0 | MIT License | https://github.com/python-hyper/h11 |
+| httptools | 0.8.0 | MIT | https://github.com/MagicStack/httptools |
+| idna | 3.16 | BSD-3-Clause | https://github.com/kjd/idna |
+| jinja2 | 3.1.6 | BSD-3-Clause |  |
+| jmespath | 1.1.0 | MIT License | https://github.com/jmespath/jmespath.py |
+| kiwisolver | 1.5.1 | BSD License | https://github.com/nucleic/kiwi |
+| laspy | 2.7.0 | BSD-2-Clause | https://github.com/laspy/laspy |
+| lazrs | 0.8.1 | MIT |  |
+| markdown-it-py | 4.2.0 | MIT License | https://github.com/executablebooks/markdown-it-py |
+| markupsafe | 3.0.3 | BSD-3-Clause |  |
+| matplotlib | 3.11.1 | Python Software Foundation License | https://matplotlib.org |
+| mdurl | 0.1.2 | MIT License | https://github.com/executablebooks/mdurl |
+| mpmath | 1.3.0 | BSD-3-Clause |  |
+| networkx | 3.6.1 | BSD-3-Clause |  |
+| numpy | 2.4.6 | BSD-3-Clause AND 0BSD AND MIT AND Zlib AND CC0-1.0 | https://numpy.org |
+| nvidia-cublas | 13.1.1.3 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-cuda-cupti | 13.0.85 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-cuda-nvrtc | 13.0.88 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-cuda-runtime | 13.0.96 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-cudnn-cu13 | 9.20.0.48 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-cufft | 12.0.0.61 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-cufile | 1.15.1.6 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-curand | 10.4.0.35 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-cusolver | 12.0.4.66 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-cusparse | 12.6.3.3 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-cusparselt-cu13 | 0.8.1 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-nccl-cu13 | 2.29.7 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-nvjitlink | 13.0.88 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-nvshmem-cu13 | 3.4.5 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| nvidia-nvtx | 13.0.85 | NVIDIA proprietary (NVIDIA Software License Agreement) -- see note |  |
+| orjson | 3.11.9 | MPL-2.0 AND (Apache-2.0 OR MIT) | https://github.com/ijl/orjson |
+| packaging | 26.2 | Apache-2.0 OR BSD-2-Clause | https://github.com/pypa/packaging |
+| pillow | 13.0.0 | MIT-CMU | https://python-pillow.github.io |
+| pycparser | 3.12 | BSD-3-Clause | https://github.com/eliben/pycparser |
+| pydantic | 2.13.4 | MIT | https://github.com/pydantic/pydantic |
+| pydantic-core | 2.46.4 | MIT | https://github.com/pydantic |
+| pydantic-settings | 2.14.2 | MIT | https://github.com/pydantic/pydantic-settings |
+| pye57 | 0.4.19 | MIT License | https://www.github.com/davidcaron/pye57 |
+| pygments | 2.20.0 | BSD-2-Clause | https://pygments.org |
+| pyjwt | 2.15.1 | MIT | https://github.com/jpadilla/pyjwt |
+| pyparsing | 3.3.2 | MIT | https://github.com/pyparsing/pyparsing/ |
+| pyquaternion | 0.9.9 | MIT License | http://kieranwynn.github.io/pyquaternion/ |
+| python-dateutil | 2.9.0.post0 | Apache Software License; BSD License | https://github.com/dateutil/dateutil |
+| python-dotenv | 1.2.2 | BSD-3-Clause | https://github.com/theskumar/python-dotenv |
+| python-multipart | 0.0.32 | Apache-2.0 | https://github.com/Kludex/python-multipart |
+| pyyaml | 6.0.3 | MIT License | https://pyyaml.org/ |
+| rich | 15.0.0 | MIT License | https://github.com/Textualize/rich |
+| s3transfer | 0.19.2 | Apache Software License | https://github.com/boto/s3transfer |
+| setuptools | 84.2.1 | MIT |  |
+| shellingham | 1.5.4 | ISC License (ISCL) | https://github.com/sarugaku/shellingham |
+| six | 1.17.0 | MIT License | https://github.com/benjaminp/six |
+| starlette | 1.3.1 | BSD-3-Clause | https://github.com/Kludex/starlette |
+| sympy | 1.14.0 | BSD-3-Clause |  |
+| torch | 2.13.0 | BSD-3-Clause |  |
+| trimesh | 4.12.2 | MIT License | https://github.com/mikedh/trimesh |
+| triton | 3.7.1 | MIT |  |
+| typer | 0.25.1 | MIT | https://github.com/fastapi/typer |
+| typing-extensions | 4.16.0 | PSF-2.0 | https://github.com/python/typing_extensions |
+| typing-inspection | 0.4.2 | MIT | https://github.com/pydantic/typing-inspection |
+| urllib3 | 2.7.0 | MIT | https://github.com/urllib3/urllib3/blob/main/CHANGES.rst |
+| uvicorn | 0.51.0 | BSD-3-Clause | https://uvicorn.dev/ |
+| uvloop | 0.22.1 | Apache Software License; MIT License |  |
+| watchfiles | 1.2.0 | MIT License | https://github.com/samuelcolvin/watchfiles |
+| websockets | 16.1.1 | BSD-3-Clause | https://github.com/python-websockets/websockets |
+
+## Python development-only dependencies
+
+Extra `dev`. Used to lint, type-check and test; not needed to run the solution.
+
+| Package | Version | License | Project URL |
+|---|---|---|---|
+| certifi | 2026.10.23 | Mozilla Public License 2.0 (MPL 2.0) | https://github.com/certifi/python-certifi |
+| httpcore | 1.0.9 | BSD-3-Clause | https://www.encode.io/httpcore/ |
+| httpx | 0.28.1 | BSD License | https://github.com/encode/httpx |
+| hypothesis | 6.163.0 | MPL-2.0 | https://hypothesis.works |
+| iniconfig | 2.3.0 | MIT | https://github.com/pytest-dev/iniconfig |
+| nodeenv | 1.10.0 | BSD License | https://github.com/ekalinin/nodeenv |
+| pluggy | 1.6.0 | MIT License |  |
+| pyright | 1.1.409 | MIT | https://github.com/RobertCraigie/pyright-python |
+| pytest | 9.0.3 | MIT | https://docs.pytest.org/en/latest/ |
+| ruff | 0.15.14 | MIT | https://docs.astral.sh/ruff |
+| sortedcontainers | 2.4.0 | Apache Software License | http://www.grantjenks.com/docs/sortedcontainers/ |
+
+## Frontend runtime dependencies
+
+`frontend/package.json` production dependencies, including transitive dependencies.
+Development-only build tooling (Vite, ESLint, TypeScript, Tailwind, Vitest and their
+dependencies) is used at build time and is not shipped in the built bundle; all of it
+is under MIT, Apache-2.0, ISC, BSD-2-Clause, BSD-3-Clause, BlueOak-1.0.0, CC-BY-4.0,
+Python-2.0 or MPL-2.0.
+
+| Package | Version | License | Project URL |
+|---|---|---|---|
+| @babel/runtime | 7.29.7 | MIT | https://github.com/babel/babel |
+| @mediapipe/tasks-vision | 0.10.17 | Apache-2.0 |  |
+| @monogrid/gainmap-js | 3.4.0 | MIT | https://github.com/MONOGRID/gainmap-js |
+| @react-spring/animated | 9.7.5 | MIT | https://github.com/pmndrs/react-spring |
+| @react-spring/core | 9.7.5 | MIT | https://github.com/pmndrs/react-spring |
+| @react-spring/rafz | 9.7.5 | MIT | https://github.com/pmndrs/react-spring |
+| @react-spring/shared | 9.7.5 | MIT | https://github.com/pmndrs/react-spring |
+| @react-spring/three | 9.7.5 | MIT | https://github.com/pmndrs/react-spring |
+| @react-spring/types | 9.7.5 | MIT | https://github.com/pmndrs/react-spring |
+| @react-three/drei | 9.122.0 | MIT | https://github.com/pmndrs/drei |
+| @react-three/fiber | 8.18.0 | MIT | https://github.com/pmndrs/react-three-fiber |
+| @tanstack/query-core | 5.101.3 | MIT | https://github.com/TanStack/query |
+| @tanstack/react-query | 5.101.3 | MIT | https://github.com/TanStack/query |
+| @tweenjs/tween.js | 23.1.3 | MIT | https://github.com/tweenjs/tween.js |
+| @types/draco3d | 1.4.10 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+| @types/offscreencanvas | 2019.7.3 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+| @types/prop-types | 15.7.15 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+| @types/react | 18.3.31 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+| @types/react-reconciler | 0.26.7 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+| @types/react-reconciler | 0.28.9 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+| @types/stats.js | 0.17.4 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+| @types/three | 0.162.0 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+| @types/webxr | 0.5.24 | MIT | https://github.com/DefinitelyTyped/DefinitelyTyped |
+| @use-gesture/core | 10.3.1 | MIT | https://github.com/pmndrs/use-gesture |
+| @use-gesture/react | 10.3.1 | MIT | https://github.com/pmndrs/use-gesture |
+| agent-base | 6.0.2 | MIT | https://github.com/TooTallNate/node-agent-base |
+| asynckit | 0.4.0 | MIT | https://github.com/alexindigo/asynckit |
+| axios | 1.18.1 | MIT | https://github.com/axios/axios |
+| base64-js | 1.5.1 | MIT | https://github.com/beatgammit/base64-js |
+| bidi-js | 1.0.3 | MIT | https://github.com/lojjic/bidi-js |
+| buffer | 6.0.3 | MIT | https://github.com/feross/buffer |
+| call-bind-apply-helpers | 1.0.2 | MIT | https://github.com/ljharb/call-bind-apply-helpers |
+| camera-controls | 2.10.1 | MIT | https://github.com/yomotsu/camera-controls |
+| combined-stream | 1.0.8 | MIT | https://github.com/felixge/node-combined-stream |
+| cookie | 1.1.1 | MIT | https://github.com/jshttp/cookie |
+| cross-env | 7.0.3 | MIT | https://github.com/kentcdodds/cross-env |
+| cross-spawn | 7.0.6 | MIT | https://github.com/moxystudio/node-cross-spawn |
+| csstype | 3.2.3 | MIT | https://github.com/frenic/csstype |
+| debug | 4.4.3 | MIT | https://github.com/debug-js/debug |
+| delayed-stream | 1.0.0 | MIT | https://github.com/felixge/node-delayed-stream |
+| detect-gpu | 5.0.70 | MIT | https://github.com/pmndrs/detect-gpu |
+| draco3d | 1.5.7 | Apache-2.0 | https://github.com/google/draco |
+| dunder-proto | 1.0.1 | MIT | https://github.com/es-shims/dunder-proto |
+| es-define-property | 1.0.1 | MIT | https://github.com/ljharb/es-define-property |
+| es-errors | 1.3.0 | MIT | https://github.com/ljharb/es-errors |
+| es-object-atoms | 1.1.2 | MIT | https://github.com/ljharb/es-object-atoms |
+| es-set-tostringtag | 2.1.0 | MIT | https://github.com/es-shims/es-set-tostringtag |
+| fflate | 0.6.11 | MIT | https://github.com/101arrowz/fflate |
+| follow-redirects | 1.16.2 | MIT | https://github.com/follow-redirects/follow-redirects |
+| form-data | 4.0.6 | MIT | https://github.com/form-data/form-data |
+| function-bind | 1.1.2 | MIT | https://github.com/Raynos/function-bind |
+| get-intrinsic | 1.3.0 | MIT | https://github.com/ljharb/get-intrinsic |
+| get-proto | 1.0.1 | MIT | https://github.com/ljharb/get-proto |
+| glsl-noise | 0.0.0 | MIT | https://github.com/hughsk/glsl-noise |
+| gopd | 1.2.0 | MIT | https://github.com/ljharb/gopd |
+| has-symbols | 1.1.0 | MIT | https://github.com/inspect-js/has-symbols |
+| has-tostringtag | 1.0.2 | MIT | https://github.com/inspect-js/has-tostringtag |
+| hasown | 2.0.4 | MIT | https://github.com/inspect-js/hasOwn |
+| hls.js | 1.6.16 | Apache-2.0 | https://github.com/video-dev/hls.js |
+| https-proxy-agent | 5.0.1 | MIT | https://github.com/TooTallNate/node-https-proxy-agent |
+| ieee754 | 1.2.1 | BSD-3-Clause | https://github.com/feross/ieee754 |
+| immediate | 3.0.6 | MIT | https://github.com/calvinmetcalf/immediate |
+| is-promise | 2.2.2 | MIT | https://github.com/then/is-promise |
+| isexe | 2.0.0 | ISC | https://github.com/isaacs/isexe |
+| its-fine | 1.2.5 | MIT | https://github.com/pmndrs/its-fine |
+| js-tokens | 4.0.0 | MIT | https://github.com/lydell/js-tokens |
+| lie | 3.3.0 | MIT | https://github.com/calvinmetcalf/lie |
+| loose-envify | 1.4.0 | MIT | https://github.com/zertosh/loose-envify |
+| maath | 0.10.8 | MIT |  |
+| math-intrinsics | 1.1.0 | MIT | https://github.com/es-shims/math-intrinsics |
+| meshline | 3.3.1 | MIT |  |
+| meshoptimizer | 0.18.1 | MIT | https://github.com/zeux/meshoptimizer |
+| mime-db | 1.52.0 | MIT | https://github.com/jshttp/mime-db |
+| mime-types | 2.1.35 | MIT | https://github.com/jshttp/mime-types |
+| ms | 2.1.3 | MIT | https://github.com/vercel/ms |
+| object-assign | 4.1.1 | MIT | https://github.com/sindresorhus/object-assign |
+| path-key | 3.1.1 | MIT | https://github.com/sindresorhus/path-key |
+| potpack | 1.0.2 | ISC | https://github.com/mapbox/potpack |
+| promise-worker-transferable | 1.0.4 | Apache-2.0 | https://github.com/terikon/promise-worker-transferable |
+| prop-types | 15.8.1 | MIT | https://github.com/facebook/prop-types |
+| proxy-from-env | 2.1.0 | MIT | https://github.com/Rob--W/proxy-from-env |
+| react | 18.3.1 | MIT | https://github.com/facebook/react |
+| react-composer | 5.0.3 | MIT | https://github.com/jamesplease/react-composer |
+| react-dom | 18.3.1 | MIT | https://github.com/facebook/react |
+| react-is | 16.13.1 | MIT | https://github.com/facebook/react |
+| react-reconciler | 0.27.0 | MIT | https://github.com/facebook/react |
+| react-router | 7.18.4 | MIT | https://github.com/remix-run/react-router |
+| react-router-dom | 7.18.4 | MIT | https://github.com/remix-run/react-router |
+| react-use-measure | 2.1.7 | MIT | https://github.com/pmndrs/react-use-measure |
+| require-from-string | 2.0.2 | MIT | https://github.com/floatdrop/require-from-string |
+| scheduler | 0.21.0 | MIT | https://github.com/facebook/react |
+| scheduler | 0.23.2 | MIT | https://github.com/facebook/react |
+| set-cookie-parser | 2.7.2 | MIT | https://github.com/nfriedly/set-cookie-parser |
+| shebang-command | 2.0.0 | MIT | https://github.com/kevva/shebang-command |
+| shebang-regex | 3.0.0 | MIT | https://github.com/sindresorhus/shebang-regex |
+| stats-gl | 2.4.2 | MIT | https://github.com/RenaudRohlinger/stats-gl |
+| stats.js | 0.17.0 | MIT | https://github.com/mrdoob/stats.js |
+| suspend-react | 0.1.3 | MIT | https://github.com/pmndrs/suspend-react |
+| three | 0.162.0 | MIT | https://github.com/mrdoob/three.js |
+| three | 0.170.0 | MIT | https://github.com/mrdoob/three.js |
+| three-mesh-bvh | 0.7.8 | MIT | https://github.com/gkjohnson/three-mesh-bvh |
+| three-stdlib | 2.36.1 | MIT | https://github.com/pmndrs/three-stdlib |
+| troika-three-text | 0.52.4 | MIT | https://github.com/protectwise/troika |
+| troika-three-utils | 0.52.4 | MIT | https://github.com/protectwise/troika |
+| troika-worker-utils | 0.52.0 | MIT | https://github.com/protectwise/troika |
+| tunnel-rat | 0.1.2 | MIT | https://github.com/pmndrs/tunnel-rat |
+| use-sync-external-store | 1.6.0 | MIT | https://github.com/facebook/react |
+| utility-types | 3.11.0 | MIT | https://github.com/piotrwitek/utility-types |
+| webgl-constants | 1.1.1 | MIT (from LICENSE file) |  |
+| webgl-sdf-generator | 1.1.1 | MIT | https://github.com/lojjic/webgl-sdf-generator |
+| which | 2.0.2 | ISC | https://github.com/isaacs/node-which |
+| zustand | 3.7.2 | MIT | https://github.com/pmndrs/zustand |
+| zustand | 4.5.7 | MIT | https://github.com/pmndrs/zustand |
+| zustand | 5.0.14 | MIT | https://github.com/pmndrs/zustand |
+
+## Regenerating this file
+
+```bash
+uv sync --locked --extra dev --extra api --extra io --extra viz
+uvx pip-licenses==5.5.5 --python .venv/bin/python --format=markdown --with-urls
+(cd frontend && npm ci && npx --yes license-checker-rseidelsohn@5.0.1 --production --excludePrivatePackages)
+```

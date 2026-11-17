@@ -1,0 +1,19 @@
+# CI-only values: the settings deploy.sh passes from Terraform, with placeholders.
+image:
+  repository: 111122223333.dkr.ecr.us-east-1.amazonaws.com/pointcloud-detection-backend
+  tag: 0123abc
+accessMode: public
+publicHost: pcd.example.com
+jobStore:
+  tableName: pointcloud-detection-dev-jobs
+aws:
+  sqs:
+    queueUrl: https://sqs.us-east-1.amazonaws.com/111122223333/pointcloud-detection-dev-jobs
+identity:
+  userPoolId: us-east-1_AbC123
+  clientId: client123
+networkPolicy:
+  vpcCidr: 10.0.0.0/16
+  albSourceCidrs:
+    - 10.0.101.0/24
+    - 10.0.102.0/24

@@ -1,0 +1,96 @@
+{{- include "pcd.validate" . }}
+{{- if eq .Values.accessMode "public" }}
+{{- $header := include "pcd.clientHeaderName" . }}
+# Two Ingresses in one IngressGroup, so one ALB. They differ only in what the Cognito
+# action does for a request with no session:
+#
+#   api (group.order 10)  deny: 401. XHRs get a status the SPA can act on, instead of a
+#                         302 to the Cognito domain that fails CORS.
+#   spa (group.order 20)  authenticate: 302 to the hosted sign-in page.
+#
+# Lower order is evaluated first, and the spa rule matches /*, so the api Ingress must
+# stay first. Resulting HTTPS:443 rules, each [authenticate-cognito, action]:
+#
+#   1  host, /api or /api/*, header present  deny      forward to the api Service
+#   2  host, /api*                           deny      fixed 403: header missing
+#   3  host, /*                              authenticate  forward to the frontend
+#   default                                  404, no auth, for any other Host
+#
+# The controller attaches the Cognito action to fixed-response rules too, so a
+# header-less request gets 401 with no session and 403 with one. Neither reaches a pod.
+#
+# Anyone who can create an Ingress with this group.name can add rules to this ALB,
+# including unauthenticated ones ahead of these, and a rule for this host receives the
+# users' session cookie. Service write in this namespace is as strong: the controller
+# lets a Service's auth-* annotations override these on a rule that forwards to it
+# (auth-type: none on the api Service takes sign-in off rule 1), and a LoadBalancer
+# Service can select the api pods directly. Keep Ingress and Service write access to
+# cluster admins; the port-forward Role (rbac-port-forward.yaml) grants neither, and
+# deploy.sh stops if a Service carries either change.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pointcloud-api
+  namespace: {{ .Values.namespace }}
+  annotations:
+    {{- include "pcd.ingressAnnotations" . | trim | nindent 4 }}
+    alb.ingress.kubernetes.io/group.order: "10"
+    alb.ingress.kubernetes.io/auth-on-unauthenticated-request: deny
+    # The api target group's own health check. It bypasses listener rules and auth,
+    # and /health is the only route the API serves outside /api.
+    alb.ingress.kubernetes.io/healthcheck-path: /health
+    # CSRF control for the session cookie, which the ALB marks SameSite=None on CORS
+    # requests. A cross-site form cannot add a custom header. A cross-site fetch that
+    # adds one is preflighted, and the preflight carries neither the cookie nor the
+    # header, so it lands on rule 2 and gets 401. Suffix = the backend Service name.
+    alb.ingress.kubernetes.io/conditions.api: {{ list (dict "field" "http-header" "httpHeaderConfig" (dict "httpHeaderName" $header "values" (list (include "pcd.clientHeaderValue" .)))) | toJson | squote }}
+    alb.ingress.kubernetes.io/actions.api-client-header-required: {{ dict "type" "fixed-response" "fixedResponseConfig" (dict "contentType" "application/json" "statusCode" "403" "messageBody" (dict "detail" (printf "%s header required" $header) | toJson)) | toJson | squote }}
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ lower .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /api
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80
+          # ImplementationSpecific is always ordered after Prefix paths, so this is
+          # evaluated only when the header condition above did not match.
+          - path: /api*
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: api-client-header-required
+                port:
+                  name: use-annotation
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: pointcloud-spa
+  namespace: {{ .Values.namespace }}
+  annotations:
+    {{- include "pcd.ingressAnnotations" . | trim | nindent 4 }}
+    alb.ingress.kubernetes.io/group.order: "20"
+    # Also the rule that serves /oauth2/idpresponse: the ALB completes sign-in on any
+    # rule with an authenticate action.
+    alb.ingress.kubernetes.io/auth-on-unauthenticated-request: authenticate
+    alb.ingress.kubernetes.io/healthcheck-path: /
+spec:
+  ingressClassName: {{ .Values.ingress.className }}
+  rules:
+    - host: {{ lower .Values.ingress.host | quote }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+{{- end }}

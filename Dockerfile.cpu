@@ -1,0 +1,51 @@
+# CPU Dockerfile for Point Cloud Detection Worker
+# Based on the GPU image (has mmdet3d + PyTorch) but patches mmcv ops
+# to run inference on CPU nodes without CUDA.
+#
+# BASE_IMAGE is required and has no default: it must be the Dockerfile.gpu image built
+# from the same commit as this build, referenced by digest. A default would silently
+# layer today's source over whichever GPU image that tag last pointed at, with
+# dependencies and code from another commit. Build the GPU image first, then:
+#
+#   docker build -f Dockerfile.cpu \
+#     --build-arg BASE_IMAGE=<registry>/pointcloud-detection-backend:<tag>-gpu@sha256:<digest> \
+#     -t pointcloud-backend-cpu .
+#
+# This enables all models (VoteNet, FCAF3D, PointPillars, CenterPoint)
+# to run on CPU. Inference is ~30-60x slower than GPU but functionally
+# identical. Use for demo/dev or as fallback when GPU capacity is unavailable.
+#
+# checkov:skip=CKV_DOCKER_2: No HEALTHCHECK. Kubernetes ignores it; the worker has no
+# endpoint to probe and the Helm chart's probes do this job.
+# checkov:skip=CKV_DOCKER_7: The base is a build argument, which the check cannot see
+# into. It is never "latest": the RUN below rejects any value not pinned by digest.
+
+# Unset, this fails the build: FROM with an empty image name is an error.
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+
+# A tag can move; a digest cannot. Refuse anything that is not pinned by one.
+ARG BASE_IMAGE
+RUN case "${BASE_IMAGE}" in \
+      *@sha256:*) ;; \
+      *) echo "BASE_IMAGE must be pinned by digest (name@sha256:...), got '${BASE_IMAGE}'" >&2; exit 1 ;; \
+    esac
+
+# Patch mmcv CUDA-only ops with CPU fallbacks
+COPY scripts/patch_mmcv_cpu.py /tmp/patch_mmcv_cpu.py
+RUN /app/.venv/bin/python3 /tmp/patch_mmcv_cpu.py && rm /tmp/patch_mmcv_cpu.py
+
+# The whole source tree, not a hand-picked overlay, so a module added since the list
+# was written (worker/parser_sidecar.py, for one) cannot be missing from the image.
+# The base image's PYTHONPATH already points at /app/src. Same ownership and modes as
+# the base: root-owned and world-readable, so the app user cannot change it.
+COPY src/ /app/src/
+RUN chmod -R a+rX,go-w /app/src
+
+USER 999
+
+# Default: worker mode (same as GPU image). PATH, PYTHONPATH, UV_NO_SYNC and
+# PYTHONDONTWRITEBYTECODE are inherited from the base.
+CMD ["/app/.venv/bin/python", "-m", "pointcloud_detect.worker.consumer"]

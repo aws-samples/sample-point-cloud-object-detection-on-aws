@@ -1,0 +1,16 @@
+# Build context for Dockerfile, Dockerfile.gpu and Dockerfile.cpu (all built from the
+# repository root). An allowlist, so nothing reaches the builder unless an image needs
+# it: not .git, a local .venv, node_modules, local_dev_data/ or any credentials file
+# that happens to sit in the checkout.
+*
+!pyproject.toml
+!uv.lock
+!README.md
+!src/
+!scripts/patch_mmcv_cpu.py
+!scripts/patch_mmengine_metadata.py
+!scripts/patch_mmdet3d_lyft.py
+
+# Local interpreter caches inside src/ are not part of the source.
+**/__pycache__
+**/*.py[cod]

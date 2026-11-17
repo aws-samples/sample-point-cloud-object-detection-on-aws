@@ -1,0 +1,34 @@
+# Fine-tuning config: Road guardrails from nuScenes barrier class
+#
+# Prerequisites:
+#   1. Download nuScenes mini: https://www.nuscenes.org/download
+#   2. Run conversion:
+#      python scripts/convert-nuscenes-barriers.py \
+#          --nuscenes-root /mnt/efs/datasets/nuscenes \
+#          --version v1.0-mini \
+#          --output-dir data/annotations/barriers \
+#          --export-points
+#   3. Run training:
+#      python -m pointcloud_detect.training.mmdet3d_trainer \
+#          --config configs/finetune_guardrails_nuscenes.yaml
+
+# Model: VoteNet fine-tuned from ScanNet pretrained weights
+base_model: votenet_scannet
+# Non-commercially licensed checkpoint: needs ALLOW_NONCOMMERCIAL_WEIGHTS=1 (README,
+# "Pretrained weights and licensing"). Use scratch or your own .pth otherwise.
+base_weights: pretrained
+
+# Data
+data_path: data/annotations/barriers
+custom_classes:
+  - guardrail
+
+# Training hyperparameters
+epochs: 20
+batch_size: 4
+learning_rate: 0.002
+val_split: 0.2
+
+# Output
+output_path: models/guardrails_nuscenes
+checkpoint_interval: 5

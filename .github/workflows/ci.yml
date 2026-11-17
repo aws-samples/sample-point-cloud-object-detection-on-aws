@@ -1,0 +1,302 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# Read-only token for every job. Nothing here pushes, comments or publishes, and on a
+# public repository a pull request from a fork must not get a writable GITHUB_TOKEN.
+# For the same reason no checkout leaves the token in the workspace's git config.
+permissions:
+  contents: read
+
+# Every action is pinned to a full commit SHA, with the release it was tagged as in a
+# trailing comment: a tag can be moved to other code, a commit cannot. Dependabot
+# (github-actions ecosystem) proposes the updates. Every container image is pinned by
+# digest, and the tool versions match .gitlab-ci.yml, the Dockerfiles and the local
+# toolchain:
+#   uv 0.12.19          (Dockerfile, Dockerfile.gpu, .gitlab-ci.yml)
+#   Node.js 22          (frontend/Dockerfile, .gitlab-ci.yml)
+#   helm v3.21.4        (.gitlab-ci.yml)
+#   terraform 1.15.8    (.gitlab-ci.yml; infrastructure requires >= 1.10)
+#
+# Cancel superseded runs on the same ref to save CI minutes.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  frontend:
+    name: Frontend — lint, type-check, build, test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Node.js
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Build (runs tsc + vite build)
+        run: npm run build
+
+      - name: Test
+        run: npm test
+
+  backend:
+    name: Backend — ruff, pyright, pytest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.19"
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      # `io` is not optional for the test suite. Without it laspy/pye57/trimesh are
+      # absent, 26 tests skip themselves, and the handful that have no skip guard
+      # fail outright. Matches the setup README.md documents for contributors.
+      - name: Sync dependencies
+        run: uv sync --locked --extra dev --extra api --extra io --extra viz
+
+      - name: Ruff (lint)
+        run: uv run ruff check .
+
+      # Formatting is enforced, not merely suggested. `ruff check` alone let seven
+      # files drift out of format while `terraform fmt -check` kept HCL in line, so
+      # the two languages held different standards. Run `uv run ruff format .` to fix.
+      # Kept in step with the `backend` job in .gitlab-ci.yml.
+      - name: Ruff (format)
+        run: uv run ruff format --check .
+
+      # Blocking, like every other step here. This carried continue-on-error while a
+      # backlog of 145 pre-existing errors was cleared; that count is now zero, so a
+      # new type error fails the build. Do not reintroduce the flag, raise a
+      # threshold, or narrow typeCheckingMode to make it pass. Kept in step with the
+      # `pyright` job in .gitlab-ci.yml.
+      - name: Pyright (type-check)
+        run: uv run pyright
+        env:
+          # Pinned as in .gitlab-ci.yml: unset, nodeenv takes the newest Node release,
+          # and a 27.0.0-alpha broke its version parsing.
+          PYRIGHT_PYTHON_NODE_VERSION: "22.23.4"
+
+      # -rs so the skip reasons are on the record. Only mmdet3d should skip: it
+      # installs via mim, not pip, so it is genuinely unavailable here. The Helm
+      # render tests also skip if this runner has no helm; the `helm` job runs them
+      # with REQUIRE_HELM=1, and the invariant-rule tests skip with no semgrep; the
+      # `invariants` job runs them. Any other skip reason means a dependency
+      # regressed out of the sync above and tests stopped running.
+      - name: Pytest
+        run: uv run pytest tests/ -v -rs
+
+  invariants:
+    name: Invariants — the reviewed findings' rules
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.19"
+
+      # The reviewed scanner findings as rules (.semgrep/invariants.yaml): the tree
+      # must satisfy them, and each must still catch a mutation of the line it
+      # guards. REQUIRE_SEMGREP=1 makes a missing semgrep fail, not skip. They need
+      # only pytest and semgrep, not the project's dependencies. Kept in step with
+      # the `invariants` job in .gitlab-ci.yml.
+      - name: Invariant rules
+        env:
+          REQUIRE_SEMGREP: "1"
+        run: >-
+          uv run --no-project --python 3.12
+          --with pytest==9.0.3 --with semgrep==1.178.0
+          pytest tests/test_invariant_rules.py tests/test_proc_helper.py -v -rs
+
+  helm:
+    name: Helm — lint, render tests, nginx -t
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # Pinned, rather than the runner image's helm, so renders do not drift.
+      - name: Set up Helm
+        uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: v3.21.4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@c18668ad3cf93ea998bef934396af7bb5c839dc7 # v10.2.0
+        with:
+          version: "0.12.19"
+
+      - name: Lint charts in both access modes
+        run: |
+          for chart in frontend backend; do
+            for mode in public port-forward; do
+              helm lint "infrastructure/helm/${chart}" \
+                -f "infrastructure/helm/${chart}/ci/${mode}-values.yaml"
+            done
+          done
+          # The training chart has no access modes. Its CI values supply what an
+          # operator passes at install time, which the chart requires. Kept in step with the `helm` job in .gitlab-ci.yml.
+          helm lint infrastructure/helm/training \
+            -f infrastructure/helm/training/ci/default-values.yaml
+
+      # The API has no authentication code: sign-in is the ALB's Cognito action and
+      # the port-forward gate is RBAC, and both exist only as rendered manifests. These
+      # tests are what pins them. REQUIRE_HELM=1 makes a missing helm fail, not skip.
+      # They need only pytest and PyYAML, not the project's dependencies, pinned to the
+      # versions uv.lock resolves for the backend job.
+      - name: Render tests
+        env:
+          REQUIRE_HELM: "1"
+        run: >-
+          uv run --no-project --python 3.12
+          --with pytest==9.0.3 --with pyyaml==6.0.3
+          pytest tests/test_helm_render.py tests/test_helm_hardening.py -v -rs
+
+      # Kept in step with the `nginx` job in .gitlab-ci.yml. The image is exactly the
+      # one frontend/Dockerfile ships, digest included, so the test is of the runtime.
+      - name: nginx -t on the rendered frontend config
+        run: |
+          mkdir -p rendered
+          for mode in public port-forward; do
+            sh infrastructure/helm/frontend/ci/render-nginx.sh "${mode}" > "rendered/nginx-${mode}.conf"
+          done
+          docker run --rm -v "${PWD}:/src:ro" -w /src \
+            public.ecr.aws/nginx/nginx-unprivileged:alpine@sha256:03df07e5931f8374d440bd62243a5ce9b24719715ef6fc4c9c626a5f1dbef417 \
+            sh infrastructure/helm/frontend/ci/nginx-test.sh \
+            rendered/nginx-public.conf rendered/nginx-port-forward.conf
+
+  terraform:
+    name: Terraform — fmt, validate
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: infrastructure
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.15.8
+
+      - name: Format check
+        run: terraform fmt -check -recursive
+
+      # validate needs init, but we don't want to touch any remote state or
+      # require cloud credentials in CI. -backend=false initialises providers
+      # and modules only, which is all `validate` needs.
+      - name: Init (no backend)
+        run: terraform init -backend=false
+
+      - name: Validate
+        run: terraform validate
+
+      # Plan-only tests of every module that has them (a tests/ directory), such as the
+      # Cognito client against the ELB requirements. The AWS provider is mocked, so
+      # this needs no credentials. A module that gains tests is picked up without a
+      # change here. Kept in step with the `terraform` job in .gitlab-ci.yml.
+      - name: Test the modules
+        run: |
+          for tests in modules/*/tests; do
+            module="$(dirname "${tests}")"
+            echo "== terraform test: ${module}"
+            terraform -chdir="${module}" init -backend=false
+            terraform -chdir="${module}" test
+          done
+
+  # Errors and warnings block; info and style notes do not. Kept in step with the
+  # `shellcheck` job in .gitlab-ci.yml.
+  shellcheck:
+    name: ShellCheck
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # find, not globs: the published export has no scripts/publication, and a glob
+      # that matches nothing reaches ShellCheck as a literal path it cannot open.
+      - name: ShellCheck the repository's scripts
+        run: |
+          # shellcheck disable=SC2046 # the paths have no spaces; one argument each
+          docker run --rm -v "${PWD}:/mnt:ro" -w /mnt \
+            koalaman/shellcheck:v0.11.0@sha256:61862eba1fcf09a484ebcc6feea46f1782532571a34ed51fedf90dd25f925a8d \
+            --severity=warning \
+            $(find infrastructure/scripts infrastructure/helm/frontend/ci scripts -name '*.sh' | sort)
+
+  # Secrets in any commit this run can see, not only the tip, since a secret removed
+  # later is still published in history. Kept in step with the `gitleaks` job in
+  # .gitlab-ci.yml.
+  gitleaks:
+    name: Gitleaks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Scan history for secrets
+        run: |
+          docker run --rm -v "${PWD}:/repo:ro" \
+            ghcr.io/gitleaks/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f \
+            git --redact --verbose /repo
+
+  # Known vulnerabilities in both lockfiles, secrets in the tree, and misconfigurations
+  # in the Dockerfiles, Terraform, Helm charts and this workflow. HIGH and CRITICAL
+  # block. Checkov is not run here: the open-source CLI cannot filter by severity, so
+  # as a gate it would block on every LOW, and as a soft-fail job nobody reads it. It
+  # is part of the pre-publication review instead. Kept in step with the `trivy` job in
+  # .gitlab-ci.yml.
+  trivy:
+    name: Trivy — vulnerabilities, secrets, misconfigurations
+    runs-on: ubuntu-latest
+    env:
+      TRIVY_IMAGE: public.ecr.aws/aquasecurity/trivy:0.74.0@sha256:62b1e65e8869bc4b4c6aa4fa2b21595256c7c2f6018a9d9ad61caf87187c1969
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Vulnerabilities and secrets
+        run: |
+          docker run --rm -v "${PWD}:/src:ro" -w /src "${TRIVY_IMAGE}" \
+            fs --scanners vuln,secret --severity HIGH,CRITICAL --exit-code 1 .
+
+      - name: Misconfigurations
+        run: |
+          docker run --rm -v "${PWD}:/src:ro" -w /src "${TRIVY_IMAGE}" \
+            config --severity HIGH,CRITICAL --exit-code 1 .

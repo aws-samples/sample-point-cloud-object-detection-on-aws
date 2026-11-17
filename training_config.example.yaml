@@ -1,0 +1,35 @@
+# Example fine-tuning configuration
+# Usage: pointcloud-detect train --config training_config.yaml
+
+base_model: "fcaf3d_scannet"        # Architecture to train (FCAF3D, or VoteNet otherwise)
+# "scratch" (random init), a path to your own .pth, or "pretrained": the
+# architecture's public checkpoint, which is non-commercially licensed and needs
+# ALLOW_NONCOMMERCIAL_WEIGHTS=1 (README, "Pretrained weights and licensing").
+base_weights: "scratch"
+
+data_path: "./data/annotations/custom"  # Directory with annotation JSONs
+val_split: 0.2                      # 20% held out for validation
+
+output_path: "./training_output"    # Where to save checkpoints
+epochs: 50
+learning_rate: 0.001
+batch_size: 8
+num_workers: 4
+checkpoint_interval: 5              # Save checkpoint every 5 epochs
+early_stopping_patience: 10         # Stop if no improvement for 10 epochs
+
+augmentation:
+  random_flip: true
+  random_rotate: true
+  random_scale: [0.9, 1.1]
+  random_jitter: 0.02
+
+custom_classes: null                # null = auto-detect from annotations
+# custom_classes:                   # Or specify explicitly:
+#   - chair
+#   - table
+#   - door
+#   - scaffolding
+#   - formwork
+
+run_on_eks: false                   # Set true to submit as Kubernetes Job

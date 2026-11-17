@@ -1,0 +1,36 @@
+# Line-ending policy
+#
+# Store every text file with LF in git AND check it out with LF, on every
+# platform. Without this, a contributor whose editor or git config produces
+# CRLF commits those bytes verbatim, and the next person to touch the file
+# shows a whole-file diff that hides the real change. That happened on
+# src/pointcloud_detect/streaming.py: a 2006-line diff for an 88-line change.
+#
+# `text=auto` = let git detect text vs binary; `eol=lf` = LF in the worktree.
+* text=auto eol=lf
+
+# Binary formats. Marked explicitly rather than relying on git's content
+# heuristic, so normalisation can never corrupt them.
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.pdf   binary
+*.zip   binary
+*.gz    binary
+*.woff  binary
+*.woff2 binary
+*.ttf   binary
+
+# Point-cloud data and model artefacts.
+*.las   binary
+*.laz   binary
+*.e57   binary
+*.ply   binary
+*.pcd   binary
+*.npy   binary
+*.npz   binary
+*.bin   binary
+*.pth   binary
+*.onnx  binary

@@ -1,0 +1,42 @@
+flowchart TD
+    A["Large point cloud on disk<br/>(LAS / LAZ / E57, up to 50 GB+)"] --> P1
+
+    subgraph PASS1["Pass 1 — Plan (one full read)"]
+        P1["Walk file in chunks<br/>build occupancy grid + true bounds"]
+        P1 --> PLAN["Adaptive octree over occupancy<br/>&rarr; tiles (leaves) with [lo, hi] extents<br/>+ guard-band margin"]
+    end
+
+    PLAN --> MAPS
+
+    subgraph MAPS["Build routing maps (in memory, small)"]
+        CLM["cell &rarr; owning-core map<br/><b>store-once:</b> each cell/point &rarr; exactly ONE core<br/>(lowest tile index wins)"]
+        NBR["neighbor map<br/>for each tile: which cores overlap its<br/>expanded box [lo - margin, hi + margin]"]
+    end
+
+    MAPS --> P2
+
+    subgraph PASS2["Pass 2 — Route (one full read)"]
+        P2["Walk file once more in chunks"]
+        P2 --> ROUTE["Look up each point's cell &rarr; owning core<br/>(O(1), vectorized) and APPEND to that<br/>core's on-disk extract"]
+        ROUTE --> EXTRACTS[("Per-core extracts on disk<br/>~= raw point bytes total<br/>(no guard-band duplication)")]
+    end
+
+    EXTRACTS --> RECON
+
+    subgraph RECON["Per-tile: reconstruct + infer (peak mem = ONE tile)"]
+        direction TB
+        R1["Read tile's OWN core extract<br/>+ its neighbor cores' extracts"]
+        R1 --> R2["Filter to expanded box<br/>[lo - margin, hi + margin]<br/>(rebuilds guard band without storing dupes)"]
+        R2 --> R3["Preprocess: coord transform to Z-up,<br/>downsample, channel select"]
+        R3 --> R4["GPU inference (detection + segmentation)"]
+    end
+
+    R4 --> OUT["Merge detections across tiles<br/>&rarr; results + LOD tiles"]
+
+    style PASS1 fill:#1e3a5f,color:#e6f0ff
+    style PASS2 fill:#1e3a5f,color:#e6f0ff
+    style MAPS fill:#3a2f1e,color:#fff4e6
+    style RECON fill:#1e3f2f,color:#e6fff0
+    style EXTRACTS fill:#4a1e3a,color:#ffe6f5
+    style A fill:#333,color:#fff
+    style OUT fill:#333,color:#fff

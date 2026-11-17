@@ -1,0 +1,33 @@
+# Fine-tuning config: Wall segmentation
+# Base: PointNet2 S3DIS (13-class) → fine-tune for wall segmentation accuracy
+# Data: S3DIS rooms filtered to wall annotations
+#
+# Usage:
+#   python -m pointcloud_detect.training.trainer --config configs/finetune_walls.yaml
+
+base_model: "pointnet2_s3dis"
+# Non-commercially licensed checkpoint: needs ALLOW_NONCOMMERCIAL_WEIGHTS=1 (README,
+# "Pretrained weights and licensing"). Use scratch or your own .pth otherwise.
+base_weights: "pretrained"
+
+data_path: "./data/annotations/s3dis_walls"
+val_split: 0.2
+output_path: "./models/walls_segmentation"
+
+epochs: 50
+learning_rate: 0.001
+batch_size: 8
+num_workers: 4
+checkpoint_interval: 10
+early_stopping_patience: 15
+
+augmentation:
+  random_flip: true
+  random_rotate: true
+  random_scale: [0.9, 1.1]
+  random_jitter: 0.02
+
+custom_classes:
+  - wall
+
+run_on_eks: false

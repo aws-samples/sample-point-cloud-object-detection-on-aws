@@ -1,0 +1,7 @@
+# CI-only values: the settings a training install must pass, with placeholders. Used by
+# helm lint and the render tests. Nothing is deployed.
+image:
+  repository: 111122223333.dkr.ecr.us-east-1.amazonaws.com/pointcloud-detection-backend
+  tag: 0123abc-gpu
+networkPolicy:
+  vpcCidr: 10.0.0.0/16

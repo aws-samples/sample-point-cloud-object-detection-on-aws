@@ -1,0 +1,95 @@
+<mxfile host="app.diagrams.net" agent="Kiro" type="device">
+  <diagram id="pcod-user-workflow" name="User Workflow">
+    <mxGraphModel dx="1600" dy="900" grid="1" gridSize="10" guides="1" tooltips="1" connect="1" arrows="1" fold="1" page="1" pageScale="1" pageWidth="1450" pageHeight="900" math="0" shadow="0">
+      <root>
+        <mxCell id="0" />
+        <mxCell id="1" parent="0" />
+
+        <mxCell id="detectionGroup" value="DETECTION — required entry point" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;fillColor=none;strokeColor=#6C8EBF;verticalAlign=top;align=center;spacingTop=10;fontSize=18;fontStyle=1;fontColor=#3B5F8A;labelBackgroundColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="240" y="190" width="600" height="390" as="geometry" />
+        </mxCell>
+        <mxCell id="fineTuneGroup" value="FINE-TUNING — optional, iterative" style="rounded=1;whiteSpace=wrap;html=1;dashed=1;dashPattern=8 8;fillColor=none;strokeColor=#9673A6;verticalAlign=top;align=center;spacingTop=10;fontSize=18;fontStyle=1;fontColor=#6C4F82;labelBackgroundColor=#FFFFFF;" vertex="1" parent="1">
+          <mxGeometry x="890" y="190" width="440" height="500" as="geometry" />
+        </mxCell>
+
+        <mxCell id="zoo" value="Model Zoo&lt;br&gt;pre-trained + fine-tuned" style="shape=cylinder3;whiteSpace=wrap;html=1;boundedLbl=1;backgroundOutline=1;size=14;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="540" y="40" width="300" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="upload" value="Upload&lt;br&gt;point cloud" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#F5F5F5;strokeColor=#666666;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="30" y="265" width="170" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="runDetect" value="Run detection job" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="280" y="265" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="review" value="Review results&lt;br&gt;in 3D viewer" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#DAE8FC;strokeColor=#6C8EBF;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="580" y="265" width="220" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="decide" value="Detections&lt;br&gt;capture intent?" style="rhombus;whiteSpace=wrap;html=1;fillColor=#FFF2CC;strokeColor=#D6B656;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="580" y="410" width="220" height="130" as="geometry" />
+        </mxCell>
+
+        <mxCell id="edit" value="Edit annotations" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="925" y="260" width="370" height="80" as="geometry" />
+        </mxCell>
+        <mxCell id="train" value="Run fine-tuning job&lt;br&gt;on baseline or latest model" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="925" y="395" width="370" height="90" as="geometry" />
+        </mxCell>
+        <mxCell id="register" value="Register fine-tuned model" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#E1D5E7;strokeColor=#9673A6;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="925" y="540" width="370" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="export" value="Point cloud + annotations JSON" style="rounded=1;whiteSpace=wrap;html=1;fillColor=#D5E8D4;strokeColor=#82B366;fontSize=16;" vertex="1" parent="1">
+          <mxGeometry x="510" y="640" width="360" height="80" as="geometry" />
+        </mxCell>
+
+        <mxCell id="e1" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;strokeWidth=1.5;" edge="1" parent="1" source="upload" target="runDetect">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e2" value="select model" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;exitX=0.15;exitY=1;entryX=0.25;entryY=0;fontSize=14;labelBackgroundColor=#FFFFFF;strokeWidth=1.5;" edge="1" parent="1" source="zoo" target="runDetect">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="585" y="155" />
+              <mxPoint x="335" y="155" />
+            </Array>
+            <mxPoint as="offset" x="-30" y="-14" />
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e3" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;strokeWidth=1.5;" edge="1" parent="1" source="runDetect" target="review">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e4" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeWidth=1.5;" edge="1" parent="1" source="review" target="decide">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e5" value="yes" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;fontSize=14;labelBackgroundColor=#FFFFFF;strokeWidth=1.5;" edge="1" parent="1" source="decide" target="export">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e6" value="no" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=1;exitY=0.5;entryX=0;entryY=0.5;fontSize=14;labelBackgroundColor=#FFFFFF;strokeWidth=1.5;" edge="1" parent="1" source="decide" target="edit">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e7" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeWidth=1.5;" edge="1" parent="1" source="edit" target="train">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e8" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=0;strokeWidth=1.5;" edge="1" parent="1" source="train" target="register">
+          <mxGeometry relative="1" as="geometry" />
+        </mxCell>
+        <mxCell id="e9" value="added to zoo" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;dashed=1;exitX=1;exitY=0.5;entryX=1;entryY=0.5;fontSize=14;labelBackgroundColor=#FFFFFF;strokeWidth=1.5;" edge="1" parent="1" source="register" target="zoo">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1380" y="580" />
+              <mxPoint x="1380" y="85" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+        <mxCell id="e10" value="re-run detection" style="edgeStyle=orthogonalEdgeStyle;rounded=1;html=1;exitX=0.5;exitY=1;entryX=0.5;entryY=1;fontSize=14;labelBackgroundColor=#FFFFFF;strokeWidth=1.5;" edge="1" parent="1" source="register" target="runDetect">
+          <mxGeometry relative="1" as="geometry">
+            <Array as="points">
+              <mxPoint x="1110" y="790" />
+              <mxPoint x="390" y="790" />
+            </Array>
+          </mxGeometry>
+        </mxCell>
+
+      </root>
+    </mxGraphModel>
+  </diagram>
+</mxfile>

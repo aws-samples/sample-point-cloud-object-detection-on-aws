@@ -1,0 +1,13 @@
+# Local stand-in for S3 and SQS in docker-compose.yml. Its own project and lockfile so
+# the emulator's dependencies are pinned and scanned like the application's, without
+# entering the application's environment.
+[project]
+name = "local-aws"
+version = "0.1.0"
+requires-python = "==3.12.*"
+# Only the two services the stack uses, plus the HTTP server: moto[server] would pull
+# in the dependencies of every service moto emulates.
+dependencies = ["moto[s3,sqs]", "flask", "flask-cors"]
+
+[tool.uv]
+package = false
