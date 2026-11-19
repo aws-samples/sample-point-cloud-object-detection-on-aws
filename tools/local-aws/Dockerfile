@@ -3,7 +3,7 @@
 # as a prebuilt emulator image whose contents this repository does not control.
 #
 # checkov:skip=CKV_DOCKER_2: No HEALTHCHECK. docker-compose.yml is the only consumer.
-FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:008ebfc399fbb853f8846cda640f88d11791e91956db0255a3e90c8b00f385a1
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:158a9044f9dc0777f098b76c8b54346f6ed4560b9a6a416dec7a5ba3bc483af4
 
 # Without python3.12's ensurepip wheel, as in the backend Dockerfile.
 RUN dnf install -y --setopt=install_weak_deps=0 --nodocs python3.12 shadow-utils \
