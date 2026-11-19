@@ -9,7 +9,7 @@
 # checkov:skip=CKV_DOCKER_2: No HEALTHCHECK. Kubernetes ignores it; the Helm chart's
 # liveness and readiness probes do this job, and the worker has no endpoint to probe.
 
-FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:008ebfc399fbb853f8846cda640f88d11791e91956db0255a3e90c8b00f385a1 AS base
+FROM public.ecr.aws/amazonlinux/amazonlinux:2023-minimal@sha256:158a9044f9dc0777f098b76c8b54346f6ed4560b9a6a416dec7a5ba3bc483af4 AS base
 
 WORKDIR /app
 
